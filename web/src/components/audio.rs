@@ -114,21 +114,25 @@ pub fn playback_control(props: &PlaybackControlProps) -> Html {
                 <i class="ph ph-speedometer text-2xl"></i>
             </button>
             <div class={classes!("speed-slider-container", "item_container-bg", (*is_open).then(|| "visible"))}>
-                <div class="speed-control-content item_container-bg">
-                    <div class="speed-text">
-                        {display_speed}
+                <div class="speed-control-content item_container-bg flex flex-col items-center">
+                    <div class="flex items-center">
+                        <div class="speed-text">
+                            {display_speed}
+                        </div>
+                        </div>    
+                    <div class="flex items-center mt-2">
+                        <input
+                            type="range"
+                            class="speed-slider"
+                            min="0.5"
+                            max="2.0"
+                            step="0.1"
+                            value={props.speed.to_string()}
+                            oninput={on_speed_change}
+                            disabled={*is_locked}
+                        />
                     </div>
-                    <input
-                        type="range"
-                        class="speed-slider"
-                        min="0.5"
-                        max="2.0"
-                        step="0.1"
-                        value={props.speed.to_string()}
-                        oninput={on_speed_change}
-                        disabled={*is_locked}
-                    />
-                    <div class="flex items-center ml-2">
+                    <div class="flex items-center mt-3">
                         <input
                             type="checkbox"
                             id="lock-speed"
@@ -136,7 +140,7 @@ pub fn playback_control(props: &PlaybackControlProps) -> Html {
                             checked={*is_locked}
                             onchange={on_lock_change}
                         />
-                        <label for="lock-speed">{"Lock"}</label>
+                        <label for="lock-speed" class="speed-text">{"Lock speed"}</label>
                     </div>
                 </div>
             </div>
@@ -1974,27 +1978,8 @@ pub fn on_play_click(
                                 audio_dispatch_for_duration.reduce_mut(move |audio_state| {
                                     audio_state.audio_playing = Some(true);
 
-                                    if let Some(window) = web_sys::window() {
-                                        if let Ok(Some(storage)) = window.local_storage() {
-                                            if let Ok(Some(locked)) = storage.get_item("playback_speed_locked") {
-                                                if locked == "true" {
-                                                    if let Ok(Some(speed_str)) = storage.get_item("playback_speed") {
-                                                        if let Ok(speed) = speed_str.parse::<f64>() {
-                                                            audio_state.playback_speed = speed;
-                                                        }
-                                                    }
-                                                } else {
-                                                    audio_state.playback_speed = playback_speed as f64;
-                                                }
-                                            } else {
-                                                audio_state.playback_speed = playback_speed as f64;
-                                            }
-                                        } else {
-                                            audio_state.playback_speed = playback_speed as f64;
-                                        }
-                                    } else {
-                                        audio_state.playback_speed = playback_speed as f64;
-                                    }
+                                    audio_state.playback_speed = get_locked_playback_speed()
+                                        .unwrap_or(playback_speed as f64);
 
                                     audio_state.audio_volume = 100.0;
                                     audio_state.offline = Some(false);
@@ -2064,6 +2049,23 @@ pub fn on_play_click(
             }
         });
     })
+}
+
+pub fn get_locked_playback_speed() -> Option<f64> {
+    if let Some(window) = web_sys::window() {
+        if let Ok(Some(storage)) = window.local_storage() {
+            if let Ok(Some(locked)) = storage.get_item("playback_speed_locked") {
+                if locked == "true" {
+                    if let Ok(Some(speed_str)) = storage.get_item("playback_speed") {
+                        if let Ok(speed) = speed_str.parse::<f64>() {
+                            return Some(speed);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(not(feature = "server_build"))]
