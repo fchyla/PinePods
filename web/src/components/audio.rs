@@ -66,6 +66,32 @@ pub fn playback_control(props: &PlaybackControlProps) -> Html {
             is_open.set(!*is_open);
         })
     };
+
+    let is_locked = use_state(|| {
+        if let Some(window) = web_sys::window() {
+            if let Ok(Some(storage)) = window.local_storage() {
+                if let Ok(Some(value)) = storage.get_item("playback_speed_locked") {
+                    return value == "true";
+                }
+            }
+        }
+        false
+    });
+
+    let on_lock_change = {
+        let is_locked = is_locked.clone();
+        Callback::from(move |e: Event| {
+            let input: HtmlInputElement = e.target_unchecked_into();
+            let checked = input.checked();
+            is_locked.set(checked);
+            if let Some(window) = web_sys::window() {
+                if let Ok(Some(storage)) = window.local_storage() {
+                    let _ = storage.set_item("playback_speed_locked", &checked.to_string());
+                }
+            }
+        })
+    };
+
     let on_speed_change = {
         let on_speed_change = props.on_speed_change.clone();
         Callback::from(move |e: InputEvent| {
@@ -100,7 +126,18 @@ pub fn playback_control(props: &PlaybackControlProps) -> Html {
                         step="0.1"
                         value={props.speed.to_string()}
                         oninput={on_speed_change}
+                        disabled={*is_locked}
                     />
+                    <div class="flex items-center ml-2">
+                        <input
+                            type="checkbox"
+                            id="lock-speed"
+                            class="mr-1"
+                            checked={*is_locked}
+                            onchange={on_lock_change}
+                        />
+                        <label for="lock-speed">{"Lock"}</label>
+                    </div>
                 </div>
             </div>
         </div>
@@ -211,6 +248,7 @@ pub fn audio_player(props: &AudioPlayerProps) -> Html {
     use_effect_with((), {
         let audio_ref = audio_ref.clone();
         let props = props.clone();
+        let audio_dispatch = _audio_dispatch.clone();
 
         move |_| {
             if let Some(window) = web_sys::window() {
@@ -222,6 +260,12 @@ pub fn audio_player(props: &AudioPlayerProps) -> Html {
                             if let Some(audio) = audio_ref.cast::<HtmlAudioElement>() {
                                 audio.set_current_time(position);
                             }
+                        }
+                    }
+
+                    if let Ok(Some(speed_str)) = storage.get_item("playback_speed") {
+                        if let Ok(speed) = speed_str.parse::<f64>() {
+                            audio_dispatch.reduce_mut(|state| state.playback_speed = speed);
                         }
                     }
                 }
@@ -1008,6 +1052,16 @@ pub fn audio_player(props: &AudioPlayerProps) -> Html {
             });
         })
     };
+
+    let audio_state_for_speed_effect = audio_state.clone();
+    use_effect_with(audio_state_for_speed_effect.playback_speed, move |speed| {
+        if let Some(window) = web_sys::window() {
+            if let Ok(Some(storage)) = window.local_storage() {
+                let _ = storage.set_item("playback_speed", &speed.to_string());
+            }
+        }
+        || ()
+    });
 
     let volume_dispatch = _audio_dispatch.clone();
 
@@ -1919,8 +1973,29 @@ pub fn on_play_click(
 
                                 audio_dispatch_for_duration.reduce_mut(move |audio_state| {
                                     audio_state.audio_playing = Some(true);
-                                    // Use the returned playback speed instead of hardcoded 1.0
-                                    audio_state.playback_speed = playback_speed as f64;
+
+                                    if let Some(window) = web_sys::window() {
+                                        if let Ok(Some(storage)) = window.local_storage() {
+                                            if let Ok(Some(locked)) = storage.get_item("playback_speed_locked") {
+                                                if locked == "true" {
+                                                    if let Ok(Some(speed_str)) = storage.get_item("playback_speed") {
+                                                        if let Ok(speed) = speed_str.parse::<f64>() {
+                                                            audio_state.playback_speed = speed;
+                                                        }
+                                                    }
+                                                } else {
+                                                    audio_state.playback_speed = playback_speed as f64;
+                                                }
+                                            } else {
+                                                audio_state.playback_speed = playback_speed as f64;
+                                            }
+                                        } else {
+                                            audio_state.playback_speed = playback_speed as f64;
+                                        }
+                                    } else {
+                                        audio_state.playback_speed = playback_speed as f64;
+                                    }
+
                                     audio_state.audio_volume = 100.0;
                                     audio_state.offline = Some(false);
                                     audio_state.currently_playing = Some(AudioPlayerProps {
@@ -1941,7 +2016,7 @@ pub fn on_play_click(
                                     if let Some(audio) = &audio_state.audio_element {
                                         audio.set_current_time(start_pos_sec);
                                         // Set the playback speed on the audio element as well
-                                        audio.set_playback_rate(playback_speed as f64);
+                                        audio.set_playback_rate(audio_state.playback_speed as f64);
                                         let _ = audio.play();
                                     }
                                     audio_state.audio_playing = Some(true);
