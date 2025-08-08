@@ -35,6 +35,7 @@ from requests.exceptions import RequestException
 import shutil
 import tempfile
 import secrets
+import html
 
 # # Get the application root directory from the environment variable
 # app_root = os.environ.get('APP_ROOT')
@@ -271,7 +272,7 @@ def add_podcast(cnx, database_type, podcast_values, user_id, feed_cutoff, userna
 
             # Now proceed with add_episodes as normal
             first_episode_id = add_episodes(cnx, database_type, podcast_id, podcast_values['pod_feed_url'],
-                                            podcast_values['pod_artwork'], False, username, password)
+                                            podcast_values['pod_artwork'], False, username=username, password=password)
             print("Episodes added for existing podcast")
             # Return both IDs like we do for new podcasts
             return podcast_id, first_episode_id
@@ -671,8 +672,10 @@ def add_oidc_provider(cnx, database_type, provider_values):
                 INSERT INTO "OIDCProviders"
                 (ProviderName, ClientID, ClientSecret, AuthorizationURL,
                 TokenURL, UserInfoURL, ButtonText, Scope,
-                ButtonColor, ButtonTextColor, IconSVG)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ButtonColor, ButtonTextColor, IconSVG, NameClaim, EmailClaim,
+                UsernameClaim, RolesClaim, UserRole, AdminRole)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s)
                 RETURNING ProviderID
             """
         else:  # MySQL
@@ -680,8 +683,10 @@ def add_oidc_provider(cnx, database_type, provider_values):
                 INSERT INTO OIDCProviders
                 (ProviderName, ClientID, ClientSecret, AuthorizationURL,
                 TokenURL, UserInfoURL, ButtonText, Scope,
-                ButtonColor, ButtonTextColor, IconSVG)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ButtonColor, ButtonTextColor, IconSVG, NameClaim, EmailClaim,
+                UsernameClaim, RolesClaim, UserRole, AdminRole)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s)
             """
         cursor.execute(add_provider_query, provider_values)
 
@@ -733,16 +738,18 @@ def list_oidc_providers(cnx, database_type):
         if database_type == "postgresql":
             list_query = """
                 SELECT ProviderID, ProviderName, ClientID, AuthorizationURL,
-                TokenURL, UserInfoURL, ButtonText,
-                Scope, ButtonColor, ButtonTextColor, IconSVG, Enabled, Created, Modified
+                TokenURL, UserInfoURL, ButtonText, Scope, ButtonColor,
+                ButtonTextColor, IconSVG, NameClaim, EmailClaim, UsernameClaim,
+                RolesClaim, UserRole, AdminRole, Enabled, Created, Modified
                 FROM "OIDCProviders"
                 ORDER BY ProviderName
             """
         else:
             list_query = """
                 SELECT ProviderID, ProviderName, ClientID, AuthorizationURL,
-                TokenURL, UserInfoURL, ButtonText,
-                Scope, ButtonColor, ButtonTextColor, IconSVG, Enabled, Created, Modified
+                TokenURL, UserInfoURL, ButtonText, Scope, ButtonColor,
+                ButtonTextColor, IconSVG, NameClaim, EmailClaim, UsernameClaim,
+                RolesClaim, UserRole, AdminRole, Enabled, Created, Modified
                 FROM OIDCProviders
                 ORDER BY ProviderName
             """
@@ -776,6 +783,18 @@ def list_oidc_providers(cnx, database_type):
                             normalized["button_text_color"] = value
                         elif normalized_key == "iconsvg":
                             normalized["icon_svg"] = value
+                        elif normalized_key == "nameclaim":
+                            normalized["name_claim"] = value
+                        elif normalized_key == "emailclaim":
+                            normalized["email_claim"] = value
+                        elif normalized_key == "usernameclaim":
+                            normalized["username_claim"] = value
+                        elif normalized_key == "rolesclaim":
+                            normalized["roles_claim"] = value
+                        elif normalized_key == "userrole":
+                            normalized["user_role"] = value
+                        elif normalized_key == "adminrole":
+                            normalized["admin_role"] = value
                         else:
                             normalized[normalized_key] = value
                     providers.append(normalized)
@@ -793,9 +812,15 @@ def list_oidc_providers(cnx, database_type):
                         'button_color': row[8],
                         'button_text_color': row[9],
                         'icon_svg': row[10],
-                        'enabled': row[11],
-                        'created': row[12],
-                        'modified': row[13]
+                        'name_claim': row[11],
+                        'email_claim': row[12],
+                        'username_claim': row[13],
+                        'roles_claim': row[14],
+                        'user_role': row[15],
+                        'admin_role': row[16],
+                        'enabled': row[17],
+                        'created': row[18],
+                        'modified': row[19]
                     })
         else:
             columns = [col[0] for col in cursor.description]
@@ -826,6 +851,18 @@ def list_oidc_providers(cnx, database_type):
                         normalized["button_text_color"] = value
                     elif normalized_key == "iconsvg":
                         normalized["icon_svg"] = value
+                    elif normalized_key == "nameclaim":
+                        normalized["name_claim"] = value
+                    elif normalized_key == "emailclaim":
+                        normalized["email_claim"] = value
+                    elif normalized_key == "usernameclaim":
+                        normalized["username_claim"] = value
+                    elif normalized_key == "rolesclaim":
+                        normalized["roles_claim"] = value
+                    elif normalized_key == "userrole":
+                        normalized["user_role"] = value
+                    elif normalized_key == "adminrole":
+                        normalized["admin_role"] = value
                     elif normalized_key == "enabled":
                         # Convert MySQL TINYINT to boolean
                         normalized["enabled"] = bool(value)
@@ -1523,20 +1560,20 @@ def remove_old_youtube_videos(cnx, database_type: str, podcast_id: int, cutoff_d
             placeholders = ','.join(['%s'] * len(video_ids))
 
             if database_type == "postgresql":
-                # Delete from all related tables
-                delete_playlist_contents = f'DELETE FROM "PlaylistContents" WHERE EpisodeID IN ({placeholders})'
-                delete_history = f'DELETE FROM "UserEpisodeHistory" WHERE EpisodeID IN ({placeholders})'
-                delete_downloaded = f'DELETE FROM "DownloadedEpisodes" WHERE EpisodeID IN ({placeholders})'
-                delete_saved = f'DELETE FROM "SavedEpisodes" WHERE EpisodeID IN ({placeholders})'
-                delete_queue = f'DELETE FROM "EpisodeQueue" WHERE EpisodeID IN ({placeholders})'
+                # Delete from all related YouTube video tables
+                delete_playlist_contents = f'DELETE FROM "PlaylistContents" WHERE VideoID IN ({placeholders})'
+                delete_history = f'DELETE FROM "UserVideoHistory" WHERE VideoID IN ({placeholders})'
+                delete_downloaded = f'DELETE FROM "DownloadedVideos" WHERE VideoID IN ({placeholders})'
+                delete_saved = f'DELETE FROM "SavedVideos" WHERE VideoID IN ({placeholders})'
+                delete_queue = f'DELETE FROM "EpisodeQueue" WHERE EpisodeID IN ({placeholders}) AND is_youtube = true'
                 delete_videos = f'DELETE FROM "YouTubeVideos" WHERE VideoID IN ({placeholders})'
             else:
-                # Delete from all related tables
-                delete_playlist_contents = f'DELETE FROM PlaylistContents WHERE EpisodeID IN ({placeholders})'
-                delete_history = f'DELETE FROM UserEpisodeHistory WHERE EpisodeID IN ({placeholders})'
-                delete_downloaded = f'DELETE FROM DownloadedEpisodes WHERE EpisodeID IN ({placeholders})'
-                delete_saved = f'DELETE FROM SavedEpisodes WHERE EpisodeID IN ({placeholders})'
-                delete_queue = f'DELETE FROM EpisodeQueue WHERE EpisodeID IN ({placeholders})'
+                # Delete from all related YouTube video tables
+                delete_playlist_contents = f'DELETE FROM PlaylistContents WHERE VideoID IN ({placeholders})'
+                delete_history = f'DELETE FROM UserVideoHistory WHERE VideoID IN ({placeholders})'
+                delete_downloaded = f'DELETE FROM DownloadedVideos WHERE VideoID IN ({placeholders})'
+                delete_saved = f'DELETE FROM SavedVideos WHERE VideoID IN ({placeholders})'
+                delete_queue = f'DELETE FROM EpisodeQueue WHERE EpisodeID IN ({placeholders}) AND is_youtube = 1'
                 delete_videos = f'DELETE FROM YouTubeVideos WHERE VideoID IN ({placeholders})'
 
             # Execute all deletion statements
@@ -2902,7 +2939,7 @@ def refresh_pods_for_user(cnx, database_type, podcast_id):
         else:
             episodes = add_episodes(cnx, database_type, podcast_id, feed_url,
                                   artwork_url, auto_download,
-                                  username, password, websocket=True)
+                                  username=username, password=password, websocket=True)
             new_episodes.extend(episodes)
 
     cursor.close()
@@ -2965,7 +3002,7 @@ def refresh_pods(cnx, database_type):
                 youtube.process_youtube_videos(database_type, podcast_id, channel_id, cnx, feed_cutoff)
             else:
                 add_episodes(cnx, database_type, podcast_id, feed_url, artwork_url,
-                           auto_download, feed_cutoff, username, password, websocket=False)
+                           auto_download, username=username, password=password, websocket=False)
         except Exception as e:
             print(f"Error refreshing podcast {podcast_id}: {str(e)}")
             continue
@@ -5674,16 +5711,16 @@ def get_api_info(database_type, cnx, user_id):
         UNION ALL
         SELECT "RssKeys".RssKeyID, "RssKeys".UserID, "Users".Username, RIGHT("RssKeys".RssKey, 4) as LastFourDigits, "RssKeys".Created, ARRAY_AGG("RssKeyMap".PodcastID) as PodcastIDs
         FROM "RssKeys"
-        JOIN "Users" ON "RssKeys".UserID = "Users".UserID 
+        JOIN "Users" ON "RssKeys".UserID = "Users".UserID
         JOIN "RssKeyMap" ON "RssKeys".RssKeyID = "RssKeyMap".RssKeyID
         GROUP BY "RssKeys".RssKeyID, "RssKeys".UserID, "Users".Username, "RssKeys".RssKey, "RssKeys".Created
         '''
     else:
         query += '''
         UNION ALL
-        SELECT RssKeys.RssKeyID, RssKeys.UserID, Users.Username, RIGHT(RssKeys.RssKey, 4) as LastFourDigits, RssKeys.Created, GROUP_CONCAT(CAST(RssKeyMap.PodcastID AS TEXT)) as PodcastIDs
+        SELECT RssKeys.RssKeyID, RssKeys.UserID, Users.Username, RIGHT(RssKeys.RssKey, 4) as LastFourDigits, RssKeys.Created, GROUP_CONCAT(CAST(RssKeyMap.PodcastID AS CHAR)) as PodcastIDs
         FROM RssKeys
-        JOIN Users ON RssKeys.UserID = Users.UserID 
+        JOIN Users ON RssKeys.UserID = Users.UserID
         JOIN RssKeyMap ON RssKeys.RssKeyID = RssKeyMap.RssKeyID
         GROUP BY RssKeys.RssKeyID, RssKeys.UserID, Users.Username, RssKeys.RssKey, RssKeys.Created
         '''
@@ -5732,25 +5769,45 @@ def create_rss_key(cnx, database_type: str, user_id: int, podcast_ids: list[int]
     api_key = ''.join(secrets.choice(alphabet) for _ in range(64))
 
     cursor = cnx.cursor()
-    if database_type == "postgresql":
-        query = 'INSERT INTO "RssKeys" (UserID, RssKey) VALUES (%s, %s)'
-    else:
-        query = "INSERT INTO RssKeys (UserID, RssKey) VALUES (%s, %s)"
+    try:
+        if database_type == "postgresql":
+            query = 'INSERT INTO "RssKeys" (UserID, RssKey) VALUES (%s, %s) RETURNING RssKeyID'
+            cursor.execute(query, (user_id, api_key))
+            result = cursor.fetchone()
+            if not result:
+                raise Exception("Failed to create RSS key - no ID returned")
 
-    cursor.execute(query, (user_id, api_key))
-    
-    if podcast_ids and len(podcast_ids) > 0 and -1 not in podcast_ids:
-        for podcast_id in podcast_ids:
-            if database_type == "postgresql":
-                query = 'INSERT INTO "RssKeyMap" (RssKeyID, PodcastID) VALUES (%s, %s)'
+            # Handle both tuple and dict return types
+            if isinstance(result, dict):
+                rss_key_id = result.get('rsskeyid') or result.get('RssKeyID')
             else:
-                query = 'INSERT INTO RssKeyMap (RssKeyID, PodcastID) VALUES (%s, %s)'
-            cursor.execute(query, (api_key, podcast_id))
-    
-    cnx.commit()
-    cursor.close()
+                rss_key_id = result[0]
 
-    return api_key
+            if not rss_key_id:
+                raise Exception("Failed to create RSS key - invalid ID returned")
+        else:
+            query = "INSERT INTO RssKeys (UserID, RssKey) VALUES (%s, %s)"
+            cursor.execute(query, (user_id, api_key))
+            rss_key_id = cursor.lastrowid
+            if not rss_key_id:
+                raise Exception("Failed to create RSS key - no lastrowid")
+
+        if podcast_ids and len(podcast_ids) > 0 and -1 not in podcast_ids:
+            for podcast_id in podcast_ids:
+                if database_type == "postgresql":
+                    query = 'INSERT INTO "RssKeyMap" (RssKeyID, PodcastID) VALUES (%s, %s)'
+                else:
+                    query = 'INSERT INTO RssKeyMap (RssKeyID, PodcastID) VALUES (%s, %s)'
+                cursor.execute(query, (rss_key_id, podcast_id))
+
+        cnx.commit()
+        return api_key
+    except Exception as e:
+        logging.error(f"Error creating RSS key for user {user_id}: {e}")
+        cnx.rollback()
+        raise
+    finally:
+        cursor.close()
 
 def set_rss_key_podcasts(cnx, database_type: str, rss_key_id: int, podcast_ids: list[int]):
     cursor = cnx.cursor()
@@ -5771,7 +5828,7 @@ def set_rss_key_podcasts(cnx, database_type: str, rss_key_id: int, podcast_ids: 
 
     cnx.commit()
     cursor.close()
-    
+
 
 def get_user_api_key(cnx, database_type, user_id):
     cursor = cnx.cursor()
@@ -6329,11 +6386,21 @@ def toggle_rss_feeds(cnx, database_type: str, user_id: int) -> bool:
 
         current_status = cursor.fetchone()
 
-        # Handle different return types
-        if isinstance(current_status, dict):
-            new_status = not current_status.get('EnableRSSFeeds', False)
+        # Handle different return types from psycopg
+        if current_status is None:
+            # User not found, default to enabling RSS feeds
+            new_status = True
+        elif isinstance(current_status, dict):
+            # Dictionary format (with dict_row)
+            current_value = current_status.get('enablerssfeeds') or current_status.get('EnableRSSFeeds')
+            new_status = not bool(current_value) if current_value is not None else True
+        elif isinstance(current_status, (tuple, list)):
+            # Tuple format (default psycopg behavior)
+            current_value = current_status[0] if current_status else None
+            new_status = not bool(current_value) if current_value is not None else True
         else:
-            new_status = not bool(current_status[0]) if current_status and current_status[0] is not None else True
+            # Fallback - assume enabling
+            new_status = True
 
         # Update status
         if database_type == "postgresql":
@@ -6343,11 +6410,58 @@ def toggle_rss_feeds(cnx, database_type: str, user_id: int) -> bool:
             )
         else:
             cursor.execute(
-                "UPDATE Users SET EnableRSSFeeds = %s WHERE UserID = %s",
+                "UPDATE Users Set EnableRSSFeeds = %s WHERE UserID = %s",
                 (new_status, user_id)
             )
         cnx.commit()
+
+        # If enabling RSS feeds, create an RSS key if one doesn't exist
+        if new_status:
+            # Check if user already has an RSS key
+            if database_type == "postgresql":
+                cursor.execute('SELECT RssKeyID FROM "RssKeys" WHERE UserID = %s', (user_id,))
+            else:
+                cursor.execute("SELECT RssKeyID FROM RssKeys WHERE UserID = %s", (user_id,))
+
+            existing_key = cursor.fetchone()
+            # Check if RSS key exists - handle both tuple and dict returns
+            has_existing_key = False
+            if existing_key:
+                if isinstance(existing_key, dict):
+                    has_existing_key = bool(existing_key.get('rsskeyid') or existing_key.get('RssKeyID'))
+                elif isinstance(existing_key, (tuple, list)):
+                    has_existing_key = bool(existing_key[0])
+
+            if not has_existing_key:
+                try:
+                    # Create RSS key for all podcasts (-1 means all)
+                    create_rss_key(cnx, database_type, user_id, [-1])
+                    logging.info(f"Created RSS key for user {user_id}")
+                except Exception as rss_error:
+                    logging.error(f"Failed to create RSS key for user {user_id}: {rss_error}")
+                    raise Exception(f"Failed to create RSS key: {str(rss_error)}")
+
         return new_status
+    except Exception as e:
+        logging.error(f"Error in toggle_rss_feeds for user {user_id}: {e}")
+        raise
+    finally:
+        cursor.close()
+
+
+def get_user_rss_key(cnx, database_type: str, user_id: int) -> str:
+    """Get the RSS key for a user"""
+    cursor = cnx.cursor()
+    try:
+        if database_type == "postgresql":
+            cursor.execute('SELECT RssKey FROM "RssKeys" WHERE UserID = %s', (user_id,))
+        else:
+            cursor.execute("SELECT RssKey FROM RssKeys WHERE UserID = %s", (user_id,))
+
+        result = cursor.fetchone()
+        if result:
+            return result[0] if isinstance(result, tuple) else result['rsskey']
+        return None
     finally:
         cursor.close()
 
@@ -6418,7 +6532,7 @@ class PodcastFeed(feedgenerator.Rss201rev2Feed):
                 attrs={'href': item['artwork_url']})
 
 
-def generate_podcast_rss(database_type: str, cnx, rss_key: dict, limit: int, source_type: str, domain: str) -> str:
+def generate_podcast_rss(database_type: str, cnx, rss_key: dict, limit: int, source_type: str, domain: str, podcast_id: Optional[List[int]] = None) -> str:
     from datetime import datetime as dt, timezone
     cursor = cnx.cursor()
     logging.basicConfig(level=logging.INFO)
@@ -6426,7 +6540,19 @@ def generate_podcast_rss(database_type: str, cnx, rss_key: dict, limit: int, sou
     user_id = rss_key.get('user_id')
     podcast_ids = rss_key.get('podcast_ids')
     key = rss_key.get('key')
-    podcast_filter = (podcast_ids and len(podcast_ids) > 0 and -1 not in podcast_ids)
+
+    # If podcast_id parameter is provided, use it; otherwise use RSS key podcast_ids
+    print(f'DEBUG: podcast_id param: {podcast_id}, type: {type(podcast_id)}')
+    print(f'DEBUG: rss_key podcast_ids: {podcast_ids}, type: {type(podcast_ids)}')
+
+    explicit_podcast_filter = False
+    if podcast_id and len(podcast_id) > 0:
+        podcast_ids = podcast_id
+        explicit_podcast_filter = True
+        print(f'DEBUG: Using explicit podcast filter, podcast_ids set to: {podcast_ids}')
+
+    podcast_filter = explicit_podcast_filter or (podcast_ids and len(podcast_ids) > 0 and -1 not in podcast_ids)
+    print(f'DEBUG: podcast_filter: {podcast_filter}, explicit_podcast_filter: {explicit_podcast_filter}')
     try:
         # Check if RSS feeds are enabled for user
         if not get_rss_feed_status(cnx, database_type, user_id):
@@ -6453,9 +6579,9 @@ def generate_podcast_rss(database_type: str, cnx, rss_key: dict, limit: int, sou
                         e.podcastid,
                         e.episodetitle,
                         e.episodedescription,
-                        CASE WHEN de.episodeid IS NULL 
-                                THEN e.episodeurl 
-                                ELSE CONCAT(CAST(%s AS TEXT), '/api/data/stream/', e.episodeid, '?api_key=', CAST(%s AS TEXT), '&user_id=', pp.userid) 
+                        CASE WHEN de.episodeid IS NULL
+                                THEN e.episodeurl
+                                ELSE CONCAT(CAST(%s AS TEXT), '/api/data/stream/', e.episodeid, '?api_key=', CAST(%s AS TEXT), '&user_id=', pp.userid)
                         END as episodeurl,
                         e.episodeartwork,
                         e.episodepubdate,
@@ -6466,7 +6592,7 @@ def generate_podcast_rss(database_type: str, cnx, rss_key: dict, limit: int, sou
                         pp.description as podcastdescription
                     FROM "Episodes" e
                     JOIN "Podcasts" pp ON e.podcastid = pp.podcastid
-                    LEFT JOIN "DownloadedEpisodes" de ON e.episodeid = de.episodeid 
+                    LEFT JOIN "DownloadedEpisodes" de ON e.episodeid = de.episodeid
                     WHERE pp.userid = %s
                 '''
             else:
@@ -6474,19 +6600,19 @@ def generate_podcast_rss(database_type: str, cnx, rss_key: dict, limit: int, sou
                     SELECT
                         e.EpisodeID,
                         e.PodcastID,
-                        e.EpisodeTitle,
-                        e.EpisodeDescription,
-                        CASE WHEN de.EpisodeID IS NULL 
-                                THEN e.EpisodeURL 
-                                ELSE CONCAT(CAST(%s AS TEXT), '/api/data/stream/', CAST(y.EpisodeID AS TEXT), '?api_key=', CAST(%s AS TEXT), '&user_id=', pp.UserID) 
-                        END as EpisodeURL,
-                        e.EpisodeArtwork,
+                        e.EpisodeTitle COLLATE utf8mb4_unicode_ci as EpisodeTitle,
+                        e.EpisodeDescription COLLATE utf8mb4_unicode_ci as EpisodeDescription,
+                        CASE WHEN de.EpisodeID IS NULL
+                                THEN e.EpisodeURL COLLATE utf8mb4_unicode_ci
+                                ELSE CONCAT(CAST(%s AS CHAR), '/api/data/stream/', CAST(e.EpisodeID AS CHAR), '?api_key=', CAST(%s AS CHAR), '&user_id=', pp.UserID)
+                        END COLLATE utf8mb4_unicode_ci as EpisodeURL,
+                        e.EpisodeArtwork COLLATE utf8mb4_unicode_ci as EpisodeArtwork,
                         e.EpisodePubDate,
                         e.EpisodeDuration,
-                        pp.PodcastName,
-                        pp.Author,
-                        pp.ArtworkURL,
-                        pp.Description as PodcastDescription
+                        pp.PodcastName COLLATE utf8mb4_unicode_ci as PodcastName,
+                        pp.Author COLLATE utf8mb4_unicode_ci as Author,
+                        pp.ArtworkURL COLLATE utf8mb4_unicode_ci as ArtworkURL,
+                        pp.Description COLLATE utf8mb4_unicode_ci as PodcastDescription
                     FROM Episodes e
                     JOIN Podcasts pp ON e.PodcastID = pp.PodcastID
                     LEFT JOIN DownloadedEpisodes de ON e.EpisodeID = de.EpisodeID
@@ -6495,10 +6621,27 @@ def generate_podcast_rss(database_type: str, cnx, rss_key: dict, limit: int, sou
 
         params = [domain, key, user_id]
         if podcast_filter:
-            base_query += f' AND {"pp.podcastid" if database_type == "postgresql" else "pp.PodcastID"} IN %s'
-            params.append(tuple(podcast_ids))
+            if database_type == "postgresql":
+                base_query += ' AND pp.podcastid = ANY(%s)'
+                params.append(podcast_ids)
+            else:
+                placeholders = ','.join(['%s'] * len(podcast_ids))
+                base_query += f' AND pp.PodcastID IN ({placeholders})'
+                params.extend(podcast_ids)
 
-        if not source_type or source_type == "youtube":
+        # For MySQL, only add YouTube union if we actually need it to avoid collation issues
+        add_youtube_union = not source_type or source_type == "youtube"
+        if database_type != "postgresql":
+            # For MySQL, check if any of the filtered podcasts are actually YouTube channels
+            if podcast_filter and add_youtube_union:
+                cursor_temp = cnx.cursor()
+                placeholders = ','.join(['%s'] * len(podcast_ids))
+                cursor_temp.execute(f"SELECT COUNT(*) FROM Podcasts WHERE PodcastID IN ({placeholders}) AND IsYouTubeChannel = 1", podcast_ids)
+                youtube_count = cursor_temp.fetchone()[0]
+                cursor_temp.close()
+                add_youtube_union = youtube_count > 0
+
+        if add_youtube_union:
             if base_query:
                 base_query += "\nUNION ALL\n"
 
@@ -6526,16 +6669,16 @@ def generate_podcast_rss(database_type: str, cnx, rss_key: dict, limit: int, sou
                     SELECT
                         y.VideoID as EpisodeID,
                         y.PodcastID as PodcastID,
-                        y.VideoTitle as EpisodeTitle,
-                        y.VideoDescription as EpisodeDescription,
-                        CONCAT(CAST(%s AS TEXT), '/api/data/stream/', CAST(y.VideoID AS TEXT), '?api_key=', CAST(%s AS TEXT), '&type=youtube&user_id=', pv.UserID) as EpisodeURL,
-                        y.ThumbnailURL as EpisodeArtwork,
+                        y.VideoTitle COLLATE utf8mb4_unicode_ci as EpisodeTitle,
+                        y.VideoDescription COLLATE utf8mb4_unicode_ci as EpisodeDescription,
+                        CONCAT(CAST(%s AS CHAR), '/api/data/stream/', CAST(y.VideoID AS CHAR), '?api_key=', CAST(%s AS CHAR), '&type=youtube&user_id=', pv.UserID) COLLATE utf8mb4_unicode_ci as EpisodeURL,
+                        y.ThumbnailURL COLLATE utf8mb4_unicode_ci as EpisodeArtwork,
                         y.PublishedAt as EpisodePubDate,
                         y.Duration as EpisodeDuration,
-                        pv.PodcastName,
-                        pv.Author,
-                        pv.ArtworkURL,
-                        pv.Description as PodcastDescription
+                        pv.PodcastName COLLATE utf8mb4_unicode_ci as PodcastName,
+                        pv.Author COLLATE utf8mb4_unicode_ci as Author,
+                        pv.ArtworkURL COLLATE utf8mb4_unicode_ci as ArtworkURL,
+                        pv.Description COLLATE utf8mb4_unicode_ci as PodcastDescription
                     FROM YouTubeVideos y
                     JOIN Podcasts pv on y.PodcastID = pv.PodcastID
                     WHERE pv.UserID = %s
@@ -6543,12 +6686,20 @@ def generate_podcast_rss(database_type: str, cnx, rss_key: dict, limit: int, sou
             params += [domain, key, user_id]
 
             if podcast_filter:
-                base_query += f' AND {"y.podcastid" if database_type == "postgresql" else "y.PodcastID"} IN %s'
-                params.append(tuple(podcast_ids))
+                if database_type == "postgresql":
+                    base_query += ' AND y.podcastid = ANY(%s)'
+                    params.append(podcast_ids)
+                else:
+                    placeholders = ','.join(['%s'] * len(podcast_ids))
+                    base_query += f' AND y.PodcastID IN ({placeholders})'
+                    params.extend(podcast_ids)
 
-        base_query += f' ORDER BY 7 DESC LIMIT %s'
-        params.append(limit)
-        cursor.execute(base_query, tuple(params))
+        base_query += f' ORDER BY 7 DESC'
+        # Only apply limit if no specific podcast is requested
+        if not explicit_podcast_filter:
+            base_query += ' LIMIT %s'
+            params.append(limit)
+        cursor.execute(base_query, params)
         print('q1')
         # Get column names and create result mapping
         columns = [desc[0].lower() for desc in cursor.description]
@@ -6616,34 +6767,56 @@ def generate_podcast_rss(database_type: str, cnx, rss_key: dict, limit: int, sou
         podcast_name = "All Podcasts"
         feed_image = "/var/www/html/static/assets/favicon.png"  # Default to Pinepods logo
 
-        # change to if podcast_ids is not None/empty or contains -1
+        # Get podcast details when filtering by specific podcast(s)
         if podcast_filter:
             try:
                 if database_type == "postgresql":
                     cursor.execute(
-                        'SELECT podcastname, artworkurl FROM "Podcasts" WHERE podcastid IN %s',  # Added artworkurl
-                        (tuple(podcast_ids),)
+                        'SELECT podcastname, artworkurl, description FROM "Podcasts" WHERE podcastid = ANY(%s)',
+                        (podcast_ids,)
                     )
                 else:
-                    cursor.execute(
-                        "SELECT PodcastName, ArtworkURL FROM Podcasts WHERE PodcastID IN %s",  # Added ArtworkURL
-                        (tuple(podcast_ids),)
-                    )
+                    # For single podcast ID, use direct equals instead of IN
+                    if len(podcast_ids) == 1:
+                        cursor.execute(
+                            "SELECT PodcastName, ArtworkURL, Description FROM Podcasts WHERE PodcastID = %s",
+                            (podcast_ids[0],)
+                        )
+                    else:
+                        placeholders = ','.join(['%s'] * len(podcast_ids))
+                        cursor.execute(
+                            f"SELECT PodcastName, ArtworkURL, Description FROM Podcasts WHERE PodcastID IN ({placeholders})",
+                            tuple(podcast_ids)
+                        )
                 result = cursor.fetchone()
                 if result:
-                    podcast_name = result[0] if isinstance(result, tuple) else result.get('podcastname', 'Unknown Podcast')
-                    feed_image = result[1] if isinstance(result, tuple) else result.get('artworkurl', feed_image)
+                    if isinstance(result, tuple):
+                        podcast_name = result[0] or "Unknown Podcast"
+                        feed_image = result[1] or feed_image
+                        podcast_description = result[2] or "No description available"
+                    else:
+                        podcast_name = result.get('podcastname') or result.get('PodcastName') or "Unknown Podcast"
+                        feed_image = result.get('artworkurl') or result.get('ArtworkURL') or feed_image
+                        podcast_description = result.get('description') or result.get('Description') or "No description available"
                 else:
                     podcast_name = "Unknown Podcast"
+                    podcast_description = "No description available"
             except Exception as e:
-                logger.error(f"Error fetching podcast name: {str(e)}")
+                logger.error(f"Error fetching podcast details: {str(e)}")
                 podcast_name = "Unknown Podcast"
+                podcast_description = "No description available"
+
+        # Set appropriate description based on whether we're filtering by specific podcast
+        if podcast_filter and 'podcast_description' in locals():
+            feed_description = podcast_description
+        else:
+            feed_description = f"RSS feed for {'all' if not podcast_filter else 'selected'} podcasts from Pinepods"
 
         # Initialize feed with custom class
         feed = PodcastFeed(
             title=f"Pinepods - {podcast_name}",
             link="https://github.com/madeofpendletonwool/pinepods",
-            description=f"RSS feed for {'all' if not podcast_filter else 'selected'} podcasts from Pinepods",
+            description=feed_description,
             language="en",
             author_name=username,
             feed_url="",
@@ -6666,15 +6839,16 @@ def generate_podcast_rss(database_type: str, cnx, rss_key: dict, limit: int, sou
         for episode in episodes:
             try:
                 episode_image = episode.get('episodeartwork') or episode.get('artworkurl', '')
-                logger.info(f"Episode {episode.get('episodetitle')} artwork: {episode_image}")
+                # Ensure URLs don't have double-encoded ampersands
+                episode_url = str(episode.get('episodeurl', '')).replace('&amp;', '&')
 
                 feed.add_item(
                     title=str(episode.get('episodetitle', 'Untitled Episode')),
-                    link=str(episode.get('episodeurl', '')),
+                    link=episode_url,
                     description=str(episode.get('episodedescription', '')),
                     unique_id=str(episode.get('episodeid', '')),
                     enclosure=feedgenerator.Enclosure(
-                        url=str(episode.get('episodeurl', '')),
+                        url=episode_url,
                         length=str(episode.get('episodeduration', '0')),
                         mime_type='audio/mpeg'
                     ),
@@ -6686,7 +6860,19 @@ def generate_podcast_rss(database_type: str, cnx, rss_key: dict, limit: int, sou
                 logger.error(f"Error adding episode to feed: {str(e)}")
                 continue
 
-        return feed.writeString('utf-8')
+        # Generate RSS and fix URL encoding
+        rss_content = feed.writeString('utf-8')
+        # Fix XML-escaped ampersands in URLs to ensure they work properly
+        rss_content = rss_content.replace('&amp;user_id=', '&user_id=')
+        rss_content = rss_content.replace('&amp;api_key=', '&api_key=')
+        rss_content = rss_content.replace('&amp;type=', '&type=')
+        # Fix HTML entities that should be actual HTML tags in descriptions
+        rss_content = rss_content.replace('&lt;', '<')
+        rss_content = rss_content.replace('&gt;', '>')
+        rss_content = rss_content.replace('&quot;', '"')
+        rss_content = rss_content.replace('&apos;', "'")
+        # Note: Keep &amp; as-is since it's a valid XML entity
+        return rss_content
 
     except Exception as e:
         logger.error(f"Error generating RSS feed: {str(e)}", exc_info=True)
@@ -6867,15 +7053,15 @@ def get_rss_key_if_valid(cnx, database_type: str, passed_key: str, podcast_ids: 
             user_id = get_value_from_result(result, 'userid')
             key_podcast_ids = get_value_from_result(result, 'podcastids')
             logging.info(f"Successfully extracted user_id: {user_id} and podcast_ids: {key_podcast_ids}")
-            
+
             # Convert podcast_ids string to list of integers
             podcast_ids_list = []
-            if podcast_ids:
+            if key_podcast_ids:
                 podcast_ids_list = [int(pid) for pid in key_podcast_ids.split(',')]
 
             if filter_podcast_ids:
                 if not podcast_ids_list or len(podcast_ids_list) == 0 or -1 in podcast_ids_list:
-                    podcast_ids_list = filter_podcast_ids
+                    podcast_ids_list = podcast_ids
                 else:
                     podcast_ids_list = [pid for pid in podcast_ids_list if pid in podcast_ids]
 
@@ -6895,7 +7081,7 @@ def get_rss_key_if_valid(cnx, database_type: str, passed_key: str, podcast_ids: 
                     podcast_ids_list = [int(pid) for pid in key_podcast_ids.split(',')]
                 if filter_podcast_ids:
                     if not podcast_ids_list or len(podcast_ids_list) == 0 or -1 in podcast_ids_list:
-                        podcast_ids_list = filter_podcast_ids
+                        podcast_ids_list = podcast_ids
                     else:
                         podcast_ids_list = [pid for pid in podcast_ids_list if pid in podcast_ids]
                 return {
@@ -8918,10 +9104,10 @@ def search_data(database_type, cnx, search_term, user_id):
                 END as downloaded
             FROM "Podcasts" p
             LEFT JOIN (
-                SELECT * FROM "Episodes" WHERE EpisodeTitle ILIKE %s
+                SELECT * FROM "Episodes" WHERE EpisodeTitle ILIKE %s OR EpisodeDescription ILIKE %s
             ) e ON p.PodcastID = e.PodcastID
             LEFT JOIN (
-                SELECT * FROM "YouTubeVideos" WHERE VideoTitle ILIKE %s
+                SELECT * FROM "YouTubeVideos" WHERE VideoTitle ILIKE %s OR VideoDescription ILIKE %s
             ) y ON p.PodcastID = y.PodcastID
             LEFT JOIN "UserEpisodeHistory" h ON
                 (e.EpisodeID = h.EpisodeID AND h.UserID = %s)
@@ -8986,10 +9172,10 @@ def search_data(database_type, cnx, search_term, user_id):
                 END as downloaded
             FROM Podcasts p
             LEFT JOIN (
-                SELECT * FROM Episodes WHERE EpisodeTitle LIKE %s
+                SELECT * FROM Episodes WHERE EpisodeTitle LIKE %s OR EpisodeDescription LIKE %s
             ) e ON p.PodcastID = e.PodcastID
             LEFT JOIN (
-                SELECT * FROM YouTubeVideos WHERE VideoTitle LIKE %s
+                SELECT * FROM YouTubeVideos WHERE VideoTitle LIKE %s OR VideoDescription LIKE %s
             ) y ON p.PodcastID = y.PodcastID
             LEFT JOIN UserEpisodeHistory h ON
                 (e.EpisodeID = h.EpisodeID AND h.UserID = %s)
@@ -9010,8 +9196,8 @@ def search_data(database_type, cnx, search_term, user_id):
     # Add wildcards for the LIKE/ILIKE clause
     search_term = f"%{search_term}%"
 
-    # We now need 9 parameters: search_term (2x), user_id (7x)
-    params = (search_term, search_term, user_id, user_id, user_id, user_id, user_id, user_id, user_id)
+    # We now need 11 parameters: search_term (4x), user_id (7x)
+    params = (search_term, search_term, search_term, search_term, user_id, user_id, user_id, user_id, user_id, user_id, user_id)
 
     try:
         start = time.time()
@@ -10327,19 +10513,16 @@ def create_playlist(cnx, database_type, playlist_data):
         # Convert podcast_ids list to appropriate format based on database type
         if database_type == "postgresql":
             podcast_ids = playlist_data.podcast_ids  # PostgreSQL can handle list directly
-        else:  # MySQL
+        else:  # MySQL - convert to JSON string
+            import json
             # Always ensure podcast_ids is a list before processing
             if playlist_data.podcast_ids is None:
-                podcast_ids = ""
+                podcast_ids = json.dumps([])
             elif isinstance(playlist_data.podcast_ids, (list, tuple)):
-                if len(playlist_data.podcast_ids) == 0:
-                    podcast_ids = ""
-                else:
-                    # Convert list to comma-separated string
-                    podcast_ids = ','.join(str(id) for id in playlist_data.podcast_ids)
+                podcast_ids = json.dumps(list(playlist_data.podcast_ids))
             else:
                 # Handle single value case
-                podcast_ids = str(playlist_data.podcast_ids)
+                podcast_ids = json.dumps([playlist_data.podcast_ids])
 
         # Create tuple of values for insert and log them
         insert_values = (
@@ -11195,7 +11378,6 @@ def get_playlist_episodes(cnx, database_type, user_id, playlist_id):
             episode_list.append(episode_dict)
 
         # Return directly matching Rust struct - no extra nesting
-        print(f"Debug - final response structure: {dict(playlist_info=normalized_info, episodes=episode_list)}")
         return {
             "playlist_info": normalized_info,
             "episodes": episode_list
@@ -12842,17 +13024,28 @@ def refresh_gpodder_subscription(database_type, cnx, user_id, gpodder_url, encry
                     actual_device_name = default_device["name"]
                     print(f"Using default device: {actual_device_name} (ID: {device_id})")
                 else:
-                    # No default device, create one
+                    # No default device, create one with proper naming pattern
+                    if is_internal_api:
+                        # Use internal device naming pattern
+                        device_name_to_use = f"pinepods-internal-{user_id}"
+                        device_type_to_use = "server"
+                        device_caption_to_use = f"PinePods Internal Device {user_id}"
+                    else:
+                        # Use default device pattern for external gPodder
+                        device_name_to_use = "pinepods_default"
+                        device_type_to_use = "desktop"
+                        device_caption_to_use = "Pinepods Default Device"
+
                     device_id = create_or_update_device(
                         cnx,
                         database_type,
                         user_id,
-                        "pinepods_default",
-                        "desktop",
-                        "Pinepods Default Device",
+                        device_name_to_use,
+                        device_type_to_use,
+                        device_caption_to_use,
                         True  # Set as default
                     )
-                    actual_device_name = "pinepods_default"
+                    actual_device_name = device_name_to_use
                     print(f"Created new default device: {actual_device_name} (ID: {device_id})")
         else:
             # No device specified, use default
@@ -12862,17 +13055,28 @@ def refresh_gpodder_subscription(database_type, cnx, user_id, gpodder_url, encry
                 actual_device_name = default_device["name"]
                 print(f"Using default device: {actual_device_name} (ID: {device_id})")
             else:
-                # No devices exist, create a default one
+                # No devices exist, create a default one with proper naming pattern
+                if is_internal_api:
+                    # Use internal device naming pattern
+                    device_name_to_use = f"pinepods-internal-{user_id}"
+                    device_type_to_use = "server"
+                    device_caption_to_use = f"PinePods Internal Device {user_id}"
+                else:
+                    # Use default device pattern for external gPodder
+                    device_name_to_use = "pinepods_default"
+                    device_type_to_use = "desktop"
+                    device_caption_to_use = "Pinepods Default Device"
+
                 device_id = create_or_update_device(
                     cnx,
                     database_type,
                     user_id,
-                    "pinepods_default",
-                    "desktop",
-                    "Pinepods Default Device",
+                    device_name_to_use,
+                    device_type_to_use,
+                    device_caption_to_use,
                     True  # Set as default
                 )
-                actual_device_name = "pinepods_default"
+                actual_device_name = device_name_to_use
                 print(f"Created new default device: {actual_device_name} (ID: {device_id})")
 
         # For remote devices, we might need to skip checking local timestamps
@@ -14496,13 +14700,13 @@ def get_oidc_provider(cnx, database_type, client_id):
     try:
         if database_type == "postgresql":
             query = """
-                SELECT ProviderID, ClientID, ClientSecret, TokenURL, UserInfoURL
+                SELECT ProviderID, ClientID, ClientSecret, TokenURL, UserInfoURL, NameClaim, EmailClaim, UsernameClaim, RolesClaim, UserRole, AdminRole
                 FROM "OIDCProviders"
                 WHERE ClientID = %s AND Enabled = true
             """
         else:
             query = """
-                SELECT ProviderID, ClientID, ClientSecret, TokenURL, UserInfoURL
+                SELECT ProviderID, ClientID, ClientSecret, TokenURL, UserInfoURL, NameClaim, EmailClaim, UsernameClaim, RolesClaim, UserRole, AdminRole
                 FROM OIDCProviders
                 WHERE ClientID = %s AND Enabled = true
             """
@@ -14515,7 +14719,13 @@ def get_oidc_provider(cnx, database_type, client_id):
                     result['clientid'],
                     result['clientsecret'],
                     result['tokenurl'],
-                    result['userinfourl']
+                    result['userinfourl'],
+                    result['nameclaim'],
+                    result['emailclaim'],
+                    result['usernameclaim'],
+                    result['rolesclaim'],
+                    result['userrole'],
+                    result['adminrole']
                 )
             return result
         return None
@@ -14553,49 +14763,10 @@ def get_user_by_email(cnx, database_type, email):
     finally:
         cursor.close()
 
-def create_oidc_user(cnx, database_type, email, fullname, base_username):
+def create_oidc_user(cnx, database_type, email, fullname, username):
     cursor = cnx.cursor()
     try:
-        print(f"Starting create_oidc_user for email: {email}, fullname: {fullname}, base_username: {base_username}")
-        # Check if username exists and find a unique one
-        username = base_username
-        counter = 1
-        while True:
-            # Check if username exists
-            check_query = """
-                SELECT COUNT(*) FROM "Users" WHERE Username = %s
-            """ if database_type == "postgresql" else """
-                SELECT COUNT(*) FROM Users WHERE Username = %s
-            """
-            print(f"Checking if username '{username}' exists")
-            cursor.execute(check_query, (username,))
-            result = cursor.fetchone()
-            print(f"Username check result: {result}, type: {type(result)}")
-
-            count = 0
-            if isinstance(result, tuple):
-                count = result[0]
-            elif isinstance(result, dict):
-                count = result.get('count', 0)
-            else:
-                # Try to extract the count value safely
-                try:
-                    count = int(result)
-                except (TypeError, ValueError):
-                    print(f"Unable to extract count from result: {result}")
-                    count = 1  # Assume username exists to be safe
-
-            print(f"Username count: {count}")
-            if count == 0:
-                print(f"Username '{username}' is unique, proceeding")
-                break  # Username is unique
-
-            # Try with incremented counter
-            print(f"Username '{username}' already exists, trying next")
-            username = f"{base_username}{counter}"
-            counter += 1
-            if counter > 10:  # Limit attempts
-                raise Exception("Could not find a unique username")
+        print(f"Starting create_oidc_user for email: {email}, fullname: {fullname}, username: {username}")
 
         # Create a random salt using base64 (which is what Argon2 expects)
         salt = base64.b64encode(secrets.token_bytes(16)).decode('utf-8')
@@ -15033,9 +15204,10 @@ def get_playback_speed(cnx, database_type: str, user_id: int, is_youtube: bool, 
     cursor.close()
 
     if result:
-        # Handle both tuple and dictionary return types
+        # Handle both tuple and dictionary return types with case variations
         if isinstance(result, dict):
-            return result['PlaybackSpeed']
+            # Try both cases for PostgreSQL vs MySQL/MariaDB
+            return result.get('PlaybackSpeed') or result.get('playbackspeed') or 1.0
         else:
-            return result[0]
+            return result[0] if result[0] is not None else 1.0
     return 1.0

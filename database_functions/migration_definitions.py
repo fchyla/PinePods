@@ -573,10 +573,11 @@ def migration_004_default_users(conn, db_type: str):
             alphabet = string.ascii_letters + string.digits
             api_key = ''.join(secrets.choice(alphabet) for _ in range(64))
             cursor.execute(f'INSERT INTO {table_prefix}APIKeys{table_suffix} (UserID, APIKey) VALUES (1, %s)', (api_key,))
-            
-            # Write API key to temp file for web service
-            with open("/tmp/web_api_key.txt", "w") as f:
-                f.write(api_key)
+        else:
+            # Extract API key from existing record
+            api_key = result[0] if isinstance(result, tuple) else result['apikey']
+        
+        # Note: Web API key file removed for security - background tasks now authenticate via database
         
         logger.info("Created default users successfully")
         
@@ -962,6 +963,996 @@ def migration_007_queue_download_tables(conn, db_type: str):
             """)
         
         logger.info("Created queue and download tables successfully")
+        
+    finally:
+        cursor.close()
+
+
+@register_migration("008", "gpodder_tables", "Create GPodder sync tables", requires=["001"])
+def migration_008_gpodder_tables(conn, db_type: str):
+    """Create GPodder sync tables"""
+    cursor = conn.cursor()
+    
+    try:
+        if db_type == "postgresql":
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS "GpodderDevices" (
+                    DeviceID SERIAL PRIMARY KEY,
+                    UserID INT NOT NULL,
+                    DeviceName VARCHAR(255) NOT NULL,
+                    DeviceType VARCHAR(50) DEFAULT 'desktop',
+                    DeviceCaption VARCHAR(255),
+                    IsDefault BOOLEAN DEFAULT FALSE,
+                    LastSync TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    IsActive BOOLEAN DEFAULT TRUE,
+                    FOREIGN KEY (UserID) REFERENCES "Users"(UserID) ON DELETE CASCADE,
+                    UNIQUE(UserID, DeviceName)
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_gpodder_devices_userid
+                ON "GpodderDevices"(UserID)
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS "GpodderSyncState" (
+                    SyncStateID SERIAL PRIMARY KEY,
+                    UserID INT NOT NULL,
+                    DeviceID INT NOT NULL,
+                    LastTimestamp BIGINT DEFAULT 0,
+                    EpisodesTimestamp BIGINT DEFAULT 0,
+                    FOREIGN KEY (UserID) REFERENCES "Users"(UserID) ON DELETE CASCADE,
+                    FOREIGN KEY (DeviceID) REFERENCES "GpodderDevices"(DeviceID) ON DELETE CASCADE,
+                    UNIQUE(UserID, DeviceID)
+                )
+            """)
+        else:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS GpodderDevices (
+                    DeviceID INT AUTO_INCREMENT PRIMARY KEY,
+                    UserID INT NOT NULL,
+                    DeviceName VARCHAR(255) NOT NULL,
+                    DeviceType VARCHAR(50) DEFAULT 'desktop',
+                    DeviceCaption VARCHAR(255),
+                    IsDefault BOOLEAN DEFAULT FALSE,
+                    LastSync TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    IsActive BOOLEAN DEFAULT TRUE,
+                    FOREIGN KEY (UserID) REFERENCES Users(UserID) ON DELETE CASCADE,
+                    UNIQUE(UserID, DeviceName)
+                )
+            """)
+            
+            # Check if index exists before creating it
+            try:
+                cursor.execute("""
+                    CREATE INDEX idx_gpodder_devices_userid
+                    ON GpodderDevices(UserID)
+                """)
+                logger.info("Created index idx_gpodder_devices_userid")
+            except Exception as e:
+                if "Duplicate key name" in str(e) or "1061" in str(e):
+                    logger.info("Index idx_gpodder_devices_userid already exists, skipping")
+                else:
+                    raise
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS GpodderSyncState (
+                    SyncStateID INT AUTO_INCREMENT PRIMARY KEY,
+                    UserID INT NOT NULL,
+                    DeviceID INT NOT NULL,
+                    LastTimestamp BIGINT DEFAULT 0,
+                    EpisodesTimestamp BIGINT DEFAULT 0,
+                    FOREIGN KEY (UserID) REFERENCES Users(UserID) ON DELETE CASCADE,
+                    FOREIGN KEY (DeviceID) REFERENCES GpodderDevices(DeviceID) ON DELETE CASCADE,
+                    UNIQUE(UserID, DeviceID)
+                )
+            """)
+        
+        logger.info("Created GPodder tables")
+        
+    finally:
+        cursor.close()
+
+
+@register_migration("009", "people_sharing_tables", "Create people and episode sharing tables", requires=["005"])
+def migration_009_people_sharing_tables(conn, db_type: str):
+    """Create people and episode sharing tables"""
+    cursor = conn.cursor()
+    
+    try:
+        if db_type == "postgresql":
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS "People" (
+                    PersonID SERIAL PRIMARY KEY,
+                    Name TEXT,
+                    PersonImg TEXT,
+                    PeopleDBID INT,
+                    AssociatedPodcasts TEXT,
+                    UserID INT,
+                    FOREIGN KEY (UserID) REFERENCES "Users"(UserID) ON DELETE CASCADE
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS "PeopleEpisodes" (
+                    EpisodeID SERIAL PRIMARY KEY,
+                    PersonID INT,
+                    PodcastID INT,
+                    EpisodeTitle TEXT,
+                    EpisodeDescription TEXT,
+                    EpisodeURL TEXT,
+                    EpisodeArtwork TEXT,
+                    EpisodePubDate TIMESTAMP,
+                    EpisodeDuration INT,
+                    AddedDate TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (PersonID) REFERENCES "People"(PersonID),
+                    FOREIGN KEY (PodcastID) REFERENCES "Podcasts"(PodcastID)
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS "SharedEpisodes" (
+                    SharedEpisodeID SERIAL PRIMARY KEY,
+                    EpisodeID INT NOT NULL,
+                    SharedBy INT NOT NULL,
+                    SharedWith INT,
+                    ShareCode TEXT UNIQUE,
+                    ExpirationDate TIMESTAMP,
+                    FOREIGN KEY (EpisodeID) REFERENCES "Episodes"(EpisodeID) ON DELETE CASCADE,
+                    FOREIGN KEY (SharedBy) REFERENCES "Users"(UserID) ON DELETE CASCADE,
+                    FOREIGN KEY (SharedWith) REFERENCES "Users"(UserID) ON DELETE CASCADE
+                )
+            """)
+        else:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS People (
+                    PersonID INT AUTO_INCREMENT PRIMARY KEY,
+                    Name TEXT,
+                    PersonImg TEXT,
+                    PeopleDBID INT,
+                    AssociatedPodcasts TEXT,
+                    UserID INT,
+                    FOREIGN KEY (UserID) REFERENCES Users(UserID) ON DELETE CASCADE
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS PeopleEpisodes (
+                    EpisodeID INT AUTO_INCREMENT PRIMARY KEY,
+                    PersonID INT,
+                    PodcastID INT,
+                    EpisodeTitle TEXT,
+                    EpisodeDescription TEXT,
+                    EpisodeURL TEXT,
+                    EpisodeArtwork TEXT,
+                    EpisodePubDate TIMESTAMP,
+                    EpisodeDuration INT,
+                    AddedDate TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (PersonID) REFERENCES People(PersonID),
+                    FOREIGN KEY (PodcastID) REFERENCES Podcasts(PodcastID)
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS SharedEpisodes (
+                    SharedEpisodeID INT AUTO_INCREMENT PRIMARY KEY,
+                    EpisodeID INT NOT NULL,
+                    SharedBy INT NOT NULL,
+                    SharedWith INT,
+                    ShareCode TEXT,
+                    ExpirationDate TIMESTAMP,
+                    FOREIGN KEY (EpisodeID) REFERENCES Episodes(EpisodeID) ON DELETE CASCADE,
+                    FOREIGN KEY (SharedBy) REFERENCES Users(UserID) ON DELETE CASCADE,
+                    FOREIGN KEY (SharedWith) REFERENCES Users(UserID) ON DELETE CASCADE,
+                    UNIQUE(ShareCode(255))
+                )
+            """)
+        
+        logger.info("Created people and sharing tables")
+        
+    finally:
+        cursor.close()
+
+
+@register_migration("010", "playlist_tables", "Create playlist management tables", requires=["005"])
+def migration_010_playlist_tables(conn, db_type: str):
+    """Create playlist management tables"""
+    cursor = conn.cursor()
+    
+    try:
+        if db_type == "postgresql":
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS "Playlists" (
+                    PlaylistID SERIAL PRIMARY KEY,
+                    UserID INT NOT NULL,
+                    Name VARCHAR(255) NOT NULL,
+                    Description TEXT,
+                    IsSystemPlaylist BOOLEAN NOT NULL DEFAULT FALSE,
+                    PodcastIDs INTEGER[],
+                    IncludeUnplayed BOOLEAN NOT NULL DEFAULT TRUE,
+                    IncludePartiallyPlayed BOOLEAN NOT NULL DEFAULT TRUE,
+                    IncludePlayed BOOLEAN NOT NULL DEFAULT FALSE,
+                    MinDuration INTEGER,
+                    MaxDuration INTEGER,
+                    SortOrder VARCHAR(50) NOT NULL DEFAULT 'date_desc'
+                        CHECK (SortOrder IN ('date_asc', 'date_desc',
+                                           'duration_asc', 'duration_desc',
+                                           'listen_progress', 'completion')),
+                    GroupByPodcast BOOLEAN NOT NULL DEFAULT FALSE,
+                    MaxEpisodes INTEGER,
+                    PlayProgressMin FLOAT,
+                    PlayProgressMax FLOAT,
+                    TimeFilterHours INTEGER,
+                    LastUpdated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    Created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    IconName VARCHAR(50) NOT NULL DEFAULT 'ph-playlist',
+                    FOREIGN KEY (UserID) REFERENCES "Users"(UserID) ON DELETE CASCADE,
+                    UNIQUE(UserID, Name),
+                    CHECK (PlayProgressMin IS NULL OR (PlayProgressMin >= 0 AND PlayProgressMin <= 100)),
+                    CHECK (PlayProgressMax IS NULL OR (PlayProgressMax >= 0 AND PlayProgressMax <= 100)),
+                    CHECK (PlayProgressMin IS NULL OR PlayProgressMax IS NULL OR PlayProgressMin <= PlayProgressMax),
+                    CHECK (MinDuration IS NULL OR MinDuration >= 0),
+                    CHECK (MaxDuration IS NULL OR MaxDuration >= 0)
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS "PlaylistContents" (
+                    PlaylistContentID SERIAL PRIMARY KEY,
+                    PlaylistID INT,
+                    EpisodeID INT,
+                    VideoID INT,
+                    Position INT,
+                    DateAdded TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (PlaylistID) REFERENCES "Playlists"(PlaylistID) ON DELETE CASCADE,
+                    FOREIGN KEY (EpisodeID) REFERENCES "Episodes"(EpisodeID) ON DELETE CASCADE,
+                    FOREIGN KEY (VideoID) REFERENCES "YouTubeVideos"(VideoID) ON DELETE CASCADE,
+                    CHECK ((EpisodeID IS NOT NULL AND VideoID IS NULL) OR (EpisodeID IS NULL AND VideoID IS NOT NULL))
+                )
+            """)
+            
+            # Create indexes for better performance
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_playlists_userid ON "Playlists"(UserID);
+                CREATE INDEX IF NOT EXISTS idx_playlist_contents_playlistid ON "PlaylistContents"(PlaylistID);
+                CREATE INDEX IF NOT EXISTS idx_playlist_contents_episodeid ON "PlaylistContents"(EpisodeID);
+                CREATE INDEX IF NOT EXISTS idx_playlist_contents_videoid ON "PlaylistContents"(VideoID);
+            """)
+        else:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS Playlists (
+                    PlaylistID INT AUTO_INCREMENT PRIMARY KEY,
+                    UserID INT NOT NULL,
+                    Name VARCHAR(255) NOT NULL,
+                    Description TEXT,
+                    IsSystemPlaylist BOOLEAN NOT NULL DEFAULT FALSE,
+                    PodcastIDs JSON,
+                    IncludeUnplayed BOOLEAN NOT NULL DEFAULT TRUE,
+                    IncludePartiallyPlayed BOOLEAN NOT NULL DEFAULT TRUE,
+                    IncludePlayed BOOLEAN NOT NULL DEFAULT FALSE,
+                    MinDuration INT,
+                    MaxDuration INT,
+                    SortOrder VARCHAR(50) NOT NULL DEFAULT 'date_desc'
+                        CHECK (SortOrder IN ('date_asc', 'date_desc',
+                                           'duration_asc', 'duration_desc',
+                                           'listen_progress', 'completion')),
+                    GroupByPodcast BOOLEAN NOT NULL DEFAULT FALSE,
+                    MaxEpisodes INT,
+                    PlayProgressMin FLOAT,
+                    PlayProgressMax FLOAT,
+                    TimeFilterHours INT,
+                    LastUpdated TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    Created TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    IconName VARCHAR(50) NOT NULL DEFAULT 'ph-playlist',
+                    FOREIGN KEY (UserID) REFERENCES Users(UserID) ON DELETE CASCADE,
+                    UNIQUE(UserID, Name),
+                    CHECK (PlayProgressMin IS NULL OR (PlayProgressMin >= 0 AND PlayProgressMin <= 100)),
+                    CHECK (PlayProgressMax IS NULL OR (PlayProgressMax >= 0 AND PlayProgressMax <= 100)),
+                    CHECK (PlayProgressMin IS NULL OR PlayProgressMax IS NULL OR PlayProgressMin <= PlayProgressMax),
+                    CHECK (MinDuration IS NULL OR MinDuration >= 0),
+                    CHECK (MaxDuration IS NULL OR MaxDuration >= 0)
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS PlaylistContents (
+                    PlaylistContentID INT AUTO_INCREMENT PRIMARY KEY,
+                    PlaylistID INT,
+                    EpisodeID INT,
+                    VideoID INT,
+                    Position INT,
+                    DateAdded TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (PlaylistID) REFERENCES Playlists(PlaylistID) ON DELETE CASCADE,
+                    FOREIGN KEY (EpisodeID) REFERENCES Episodes(EpisodeID) ON DELETE CASCADE,
+                    FOREIGN KEY (VideoID) REFERENCES YouTubeVideos(VideoID) ON DELETE CASCADE,
+                    CHECK ((EpisodeID IS NOT NULL AND VideoID IS NULL) OR (EpisodeID IS NULL AND VideoID IS NOT NULL))
+                )
+            """)
+            
+            # Create indexes for better performance (MySQL doesn't support IF NOT EXISTS for indexes)
+            try:
+                cursor.execute("CREATE INDEX idx_playlists_userid ON Playlists(UserID)")
+            except:
+                pass  # Index may already exist
+            try:
+                cursor.execute("CREATE INDEX idx_playlist_contents_playlistid ON PlaylistContents(PlaylistID)")
+            except:
+                pass  # Index may already exist
+            try:
+                cursor.execute("CREATE INDEX idx_playlist_contents_episodeid ON PlaylistContents(EpisodeID)")
+            except:
+                pass  # Index may already exist
+            try:
+                cursor.execute("CREATE INDEX idx_playlist_contents_videoid ON PlaylistContents(VideoID)")
+            except:
+                pass  # Index may already exist
+        
+        logger.info("Created playlist tables")
+        
+    finally:
+        cursor.close()
+
+
+@register_migration("011", "session_notification_tables", "Create session and notification tables", requires=["001"])
+def migration_011_session_notification_tables(conn, db_type: str):
+    """Create session and notification tables"""
+    cursor = conn.cursor()
+    
+    try:
+        if db_type == "postgresql":
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS "Sessions" (
+                    SessionID SERIAL PRIMARY KEY,
+                    UserID INT NOT NULL,
+                    SessionToken TEXT NOT NULL,
+                    ExpirationTime TIMESTAMP NOT NULL,
+                    IsActive BOOLEAN DEFAULT TRUE,
+                    FOREIGN KEY (UserID) REFERENCES "Users"(UserID) ON DELETE CASCADE
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS "UserNotificationSettings" (
+                    SettingID SERIAL PRIMARY KEY,
+                    UserID INT,
+                    Platform VARCHAR(50) NOT NULL,
+                    Enabled BOOLEAN DEFAULT TRUE,
+                    NtfyTopic VARCHAR(255),
+                    NtfyServerUrl VARCHAR(255) DEFAULT 'https://ntfy.sh',
+                    GotifyUrl VARCHAR(255),
+                    GotifyToken VARCHAR(255),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (UserID) REFERENCES "Users"(UserID) ON DELETE CASCADE,
+                    UNIQUE(UserID, Platform)
+                )
+            """)
+        else:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS Sessions (
+                    SessionID INT AUTO_INCREMENT PRIMARY KEY,
+                    UserID INT NOT NULL,
+                    SessionToken TEXT NOT NULL,
+                    ExpirationTime TIMESTAMP NOT NULL,
+                    IsActive BOOLEAN DEFAULT TRUE,
+                    FOREIGN KEY (UserID) REFERENCES Users(UserID) ON DELETE CASCADE
+                )
+            """)
+            
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS UserNotificationSettings (
+                    SettingID INT AUTO_INCREMENT PRIMARY KEY,
+                    UserID INT,
+                    Platform VARCHAR(50) NOT NULL,
+                    Enabled BOOLEAN DEFAULT TRUE,
+                    NtfyTopic VARCHAR(255),
+                    NtfyServerUrl VARCHAR(255) DEFAULT 'https://ntfy.sh',
+                    GotifyUrl VARCHAR(255),
+                    GotifyToken VARCHAR(255),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    FOREIGN KEY (UserID) REFERENCES Users(UserID) ON DELETE CASCADE,
+                    UNIQUE(UserID, Platform)
+                )
+            """)
+        
+        logger.info("Created session and notification tables")
+        
+    finally:
+        cursor.close()
+
+
+@register_migration("012", "create_system_playlists", "Create default system playlists", requires=["010"])
+def migration_012_create_system_playlists(conn, db_type: str):
+    """Create default system playlists"""
+    cursor = conn.cursor()
+    
+    try:
+        # Define system playlists
+        system_playlists = [
+            {
+                'name': 'Quick Listens',
+                'description': 'Short episodes under 15 minutes, perfect for quick breaks',
+                'min_duration': None,
+                'max_duration': 900,  # 15 minutes
+                'sort_order': 'duration_asc',
+                'icon_name': 'ph-fast-forward'
+            },
+            {
+                'name': 'Longform',
+                'description': 'Extended episodes over 1 hour, ideal for long drives or deep dives',
+                'min_duration': 3600,  # 1 hour
+                'max_duration': None,
+                'sort_order': 'duration_desc',
+                'icon_name': 'ph-car'
+            },
+            {
+                'name': 'Currently Listening',
+                'description': 'Episodes you\'ve started but haven\'t finished',
+                'min_duration': None,
+                'max_duration': None,
+                'sort_order': 'date_desc',
+                'include_unplayed': False,
+                'include_partially_played': True,
+                'include_played': False,
+                'icon_name': 'ph-play'
+            },
+            {
+                'name': 'Fresh Releases',
+                'description': 'Latest episodes from the last 24 hours',
+                'min_duration': None,
+                'max_duration': None,
+                'sort_order': 'date_desc',
+                'include_unplayed': True,
+                'include_partially_played': False,
+                'include_played': False,
+                'time_filter_hours': 24,
+                'icon_name': 'ph-sparkle'
+            },
+            {
+                'name': 'Weekend Marathon',
+                'description': 'Longer episodes (30+ minutes) perfect for weekend listening',
+                'min_duration': 1800,  # 30 minutes
+                'max_duration': None,
+                'sort_order': 'duration_desc',
+                'group_by_podcast': True,
+                'icon_name': 'ph-couch'
+            },
+            {
+                'name': 'Commuter Mix',
+                'description': 'Episodes between 20-40 minutes, ideal for average commute times',
+                'min_duration': 1200,  # 20 minutes
+                'max_duration': 2400,  # 40 minutes
+                'sort_order': 'date_desc',
+                'icon_name': 'ph-train'
+            },
+            {
+                'name': 'Almost Done',
+                'description': 'Episodes you\'re close to finishing (75%+ complete)',
+                'min_duration': None,
+                'max_duration': None,
+                'sort_order': 'date_asc',
+                'include_unplayed': False,
+                'include_partially_played': True,
+                'include_played': False,
+                'play_progress_min': 75.0,
+                'play_progress_max': None,
+                'icon_name': 'ph-hourglass'
+            }
+        ]
+
+        # Insert system playlists for background tasks user (UserID = 1)
+        for playlist in system_playlists:
+            try:
+                # First check if this playlist already exists
+                if db_type == "postgresql":
+                    cursor.execute("""
+                        SELECT COUNT(*)
+                        FROM "Playlists"
+                        WHERE UserID = 1 AND Name = %s AND IsSystemPlaylist = TRUE
+                    """, (playlist['name'],))
+                else:
+                    cursor.execute("""
+                        SELECT COUNT(*)
+                        FROM Playlists
+                        WHERE UserID = 1 AND Name = %s AND IsSystemPlaylist = TRUE
+                    """, (playlist['name'],))
+
+                if cursor.fetchone()[0] == 0:
+                    if db_type == "postgresql":
+                        cursor.execute("""
+                            INSERT INTO "Playlists" (
+                                UserID,
+                                Name,
+                                Description,
+                                IsSystemPlaylist,
+                                MinDuration,
+                                MaxDuration,
+                                SortOrder,
+                                GroupByPodcast,
+                                IncludeUnplayed,
+                                IncludePartiallyPlayed,
+                                IncludePlayed,
+                                IconName,
+                                TimeFilterHours,
+                                PlayProgressMin,
+                                PlayProgressMax
+                            ) VALUES (
+                                1, %s, %s, TRUE, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                            )
+                        """, (
+                            playlist['name'],
+                            playlist['description'],
+                            playlist.get('min_duration'),
+                            playlist.get('max_duration'),
+                            playlist.get('sort_order', 'date_asc'),
+                            playlist.get('group_by_podcast', False),
+                            playlist.get('include_unplayed', True),
+                            playlist.get('include_partially_played', True),
+                            playlist.get('include_played', False),
+                            playlist.get('icon_name', 'ph-playlist'),
+                            playlist.get('time_filter_hours'),
+                            playlist.get('play_progress_min'),
+                            playlist.get('play_progress_max')
+                        ))
+                    else:
+                        cursor.execute("""
+                            INSERT INTO Playlists (
+                                UserID,
+                                Name,
+                                Description,
+                                IsSystemPlaylist,
+                                MinDuration,
+                                MaxDuration,
+                                SortOrder,
+                                GroupByPodcast,
+                                IncludeUnplayed,
+                                IncludePartiallyPlayed,
+                                IncludePlayed,
+                                IconName,
+                                TimeFilterHours,
+                                PlayProgressMin,
+                                PlayProgressMax
+                            ) VALUES (
+                                1, %s, %s, TRUE, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                            )
+                        """, (
+                            playlist['name'],
+                            playlist['description'],
+                            playlist.get('min_duration'),
+                            playlist.get('max_duration'),
+                            playlist.get('sort_order', 'date_asc'),
+                            playlist.get('group_by_podcast', False),
+                            playlist.get('include_unplayed', True),
+                            playlist.get('include_partially_played', True),
+                            playlist.get('include_played', False),
+                            playlist.get('icon_name', 'ph-playlist'),
+                            playlist.get('time_filter_hours'),
+                            playlist.get('play_progress_min'),
+                            playlist.get('play_progress_max')
+                        ))
+                    
+                    logger.info(f"Created system playlist: {playlist['name']}")
+                else:
+                    logger.info(f"System playlist already exists: {playlist['name']}")
+
+            except Exception as e:
+                logger.error(f"Error creating system playlist {playlist['name']}: {e}")
+                continue
+
+        logger.info("System playlists creation completed")
+        
+    finally:
+        cursor.close()
+
+
+@register_migration("013", "add_playback_speed_columns", "Add PlaybackSpeed columns to Users and Podcasts tables for existing installations")
+def add_playback_speed_columns(conn, db_type: str) -> None:
+    """Add PlaybackSpeed columns to Users and Podcasts tables for existing installations"""
+    
+    cursor = conn.cursor()
+    
+    try:
+        # Add PlaybackSpeed to Users table if it doesn't exist
+        try:
+            if db_type == "postgresql":
+                cursor.execute("""
+                    ALTER TABLE "Users" 
+                    ADD COLUMN IF NOT EXISTS PlaybackSpeed NUMERIC(2,1) DEFAULT 1.0
+                """)
+            else:  # MySQL/MariaDB
+                # Check if column exists first
+                cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM INFORMATION_SCHEMA.COLUMNS 
+                    WHERE TABLE_SCHEMA = DATABASE() 
+                    AND TABLE_NAME = 'Users' 
+                    AND COLUMN_NAME = 'PlaybackSpeed'
+                """)
+                if cursor.fetchone()[0] == 0:
+                    cursor.execute("""
+                        ALTER TABLE Users 
+                        ADD COLUMN PlaybackSpeed DECIMAL(2,1) UNSIGNED DEFAULT 1.0
+                    """)
+                    logger.info("Added PlaybackSpeed column to Users table")
+                else:
+                    logger.info("PlaybackSpeed column already exists in Users table")
+                    
+        except Exception as e:
+            logger.error(f"Error adding PlaybackSpeed to Users table: {e}")
+            # Don't fail the migration for this
+    
+        # Add PlaybackSpeed columns to Podcasts table if they don't exist
+        try:
+            if db_type == "postgresql":
+                cursor.execute("""
+                    ALTER TABLE "Podcasts" 
+                    ADD COLUMN IF NOT EXISTS PlaybackSpeed NUMERIC(2,1) DEFAULT 1.0,
+                    ADD COLUMN IF NOT EXISTS PlaybackSpeedCustomized BOOLEAN DEFAULT FALSE
+                """)
+            else:  # MySQL/MariaDB
+                # Check if PlaybackSpeed column exists
+                cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM INFORMATION_SCHEMA.COLUMNS 
+                    WHERE TABLE_SCHEMA = DATABASE() 
+                    AND TABLE_NAME = 'Podcasts' 
+                    AND COLUMN_NAME = 'PlaybackSpeed'
+                """)
+                if cursor.fetchone()[0] == 0:
+                    cursor.execute("""
+                        ALTER TABLE Podcasts 
+                        ADD COLUMN PlaybackSpeed DECIMAL(2,1) UNSIGNED DEFAULT 1.0
+                    """)
+                    logger.info("Added PlaybackSpeed column to Podcasts table")
+                else:
+                    logger.info("PlaybackSpeed column already exists in Podcasts table")
+                    
+                # Check if PlaybackSpeedCustomized column exists
+                cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM INFORMATION_SCHEMA.COLUMNS 
+                    WHERE TABLE_SCHEMA = DATABASE() 
+                    AND TABLE_NAME = 'Podcasts' 
+                    AND COLUMN_NAME = 'PlaybackSpeedCustomized'
+                """)
+                if cursor.fetchone()[0] == 0:
+                    cursor.execute("""
+                        ALTER TABLE Podcasts 
+                        ADD COLUMN PlaybackSpeedCustomized TINYINT(1) DEFAULT 0
+                    """)
+                    logger.info("Added PlaybackSpeedCustomized column to Podcasts table")
+                else:
+                    logger.info("PlaybackSpeedCustomized column already exists in Podcasts table")
+                    
+        except Exception as e:
+            logger.error(f"Error adding PlaybackSpeed columns to Podcasts table: {e}")
+            # Don't fail the migration for this
+        
+        logger.info("Playback speed columns migration completed")
+    
+    finally:
+        cursor.close()
+
+
+@register_migration("014", "fix_missing_rss_tables", "Create missing RSS tables from migration 001 for 0.7.8 upgrades")
+def fix_missing_rss_tables(conn, db_type: str) -> None:
+    """Create missing RSS tables for users upgrading from 0.7.8"""
+    
+    cursor = conn.cursor()
+    
+    try:
+        # Check and create RssKeys table if it doesn't exist
+        if db_type == 'postgresql':
+            table_name = '"RssKeys"'
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_schema = 'public' AND table_name = %s
+                )
+            """, ('RssKeys',))
+        else:  # mysql
+            table_name = 'RssKeys'
+            cursor.execute("""
+                SELECT COUNT(*) 
+                FROM information_schema.tables 
+                WHERE table_schema = DATABASE() AND table_name = %s
+            """, ('RssKeys',))
+        
+        table_exists = cursor.fetchone()[0]
+        
+        if not table_exists:
+            logger.info("Creating missing RssKeys table")
+            if db_type == 'postgresql':
+                cursor.execute("""
+                    CREATE TABLE "RssKeys" (
+                        RssKeyID SERIAL PRIMARY KEY,
+                        UserID INT,
+                        RssKey TEXT,
+                        Created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (UserID) REFERENCES "Users"(UserID) ON DELETE CASCADE
+                    )
+                """)
+            else:  # mysql
+                cursor.execute("""
+                    CREATE TABLE RssKeys (
+                        RssKeyID INT AUTO_INCREMENT PRIMARY KEY,
+                        UserID INT,
+                        RssKey TEXT,
+                        Created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (UserID) REFERENCES Users(UserID) ON DELETE CASCADE
+                    )
+                """)
+            logger.info("Created RssKeys table")
+        else:
+            logger.info("RssKeys table already exists")
+        
+        # Check and create RssKeyMap table if it doesn't exist
+        if db_type == 'postgresql':
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_schema = 'public' AND table_name = %s
+                )
+            """, ('RssKeyMap',))
+        else:  # mysql
+            cursor.execute("""
+                SELECT COUNT(*) 
+                FROM information_schema.tables 
+                WHERE table_schema = DATABASE() AND table_name = %s
+            """, ('RssKeyMap',))
+        
+        table_exists = cursor.fetchone()[0]
+        
+        if not table_exists:
+            logger.info("Creating missing RssKeyMap table")
+            if db_type == 'postgresql':
+                cursor.execute("""
+                    CREATE TABLE "RssKeyMap" (
+                        RssKeyID INT,
+                        PodcastID INT,
+                        FOREIGN KEY (RssKeyID) REFERENCES "RssKeys"(RssKeyID) ON DELETE CASCADE
+                    )
+                """)
+            else:  # mysql
+                cursor.execute("""
+                    CREATE TABLE RssKeyMap (
+                        RssKeyID INT,
+                        PodcastID INT,
+                        FOREIGN KEY (RssKeyID) REFERENCES RssKeys(RssKeyID) ON DELETE CASCADE
+                    )
+                """)
+            logger.info("Created RssKeyMap table")
+        else:
+            logger.info("RssKeyMap table already exists")
+        
+        logger.info("Missing RSS tables migration completed")
+
+    finally:
+        cursor.close()
+    
+
+# Migration 015: OIDC settings for claims & roles.
+@register_migration("015", "oidc_claims_and_roles", "Add columns for OIDC claims & roles settings", requires=["002"])
+def migration_015_oidc_claims_and_roles(conn, db_type: str):
+    """Add columns for OIDC claims & roles settings"""
+    cursor = conn.cursor()
+
+    try:
+        if db_type == "postgresql":
+            cursor.execute("""
+                ALTER TABLE "OIDCProviders"
+                ADD COLUMN IF NOT EXISTS NameClaim VARCHAR(255),
+                ADD COLUMN IF NOT EXISTS EmailClaim VARCHAR(255),
+                ADD COLUMN IF NOT EXISTS UsernameClaim VARCHAR(255),
+                ADD COLUMN IF NOT EXISTS RolesClaim VARCHAR(255),
+                ADD COLUMN IF NOT EXISTS UserRole VARCHAR(255),
+                ADD COLUMN IF NOT EXISTS AdminRole VARCHAR(255);
+            """)
+        else:
+            cursor.execute("""
+                ALTER TABLE OIDCProviders
+                ADD COLUMN NameClaim VARCHAR(255) AFTER IconSVG,
+                ADD COLUMN EmailClaim VARCHAR(255) AFTER NameClaim,
+                ADD COLUMN UsernameClaim VARCHAR(255) AFTER EmailClaim,
+                ADD COLUMN RolesClaim VARCHAR(255) AFTER UsernameClaim,
+                ADD COLUMN UserRole VARCHAR(255) AFTER RolesClaim,
+                ADD COLUMN AdminRole VARCHAR(255) AFTER UserRole;
+            """)
+
+        logger.info("Added claim & roles settings to OIDC table")
+
+    finally:
+        cursor.close()
+
+
+# Migration 016: Add autocompleteseconds to UserSettings
+@register_migration("016", "add_auto_complete_seconds", "Add autocompleteseconds column to UserSettings table", requires=["003"])
+def migration_016_add_auto_complete_seconds(conn, db_type: str):
+    """Add autocompleteseconds column to UserSettings table"""
+    cursor = conn.cursor()
+    
+    try:
+        if db_type == 'postgresql':
+            # Check if column exists first
+            cursor.execute("""
+                SELECT COUNT(*)
+                FROM information_schema.columns
+                WHERE table_name = 'UserSettings' 
+                AND column_name = 'autocompleteseconds'
+                AND table_schema = 'public'
+            """)
+            column_exists = cursor.fetchone()[0] > 0
+            
+            if not column_exists:
+                cursor.execute("""
+                    ALTER TABLE "UserSettings"
+                    ADD COLUMN autocompleteseconds INTEGER DEFAULT 0
+                """)
+                logger.info("Added autocompleteseconds column to UserSettings table (PostgreSQL)")
+            else:
+                logger.info("autocompleteseconds column already exists in UserSettings table (PostgreSQL)")
+                
+        else:  # mysql
+            # Check if column exists first
+            cursor.execute("""
+                SELECT COUNT(*)
+                FROM information_schema.columns
+                WHERE table_name = 'UserSettings' 
+                AND column_name = 'AutoCompleteSeconds'
+                AND table_schema = DATABASE()
+            """)
+            column_exists = cursor.fetchone()[0] > 0
+            
+            if not column_exists:
+                cursor.execute("""
+                    ALTER TABLE UserSettings
+                    ADD COLUMN AutoCompleteSeconds INT DEFAULT 0
+                """)
+                logger.info("Added AutoCompleteSeconds column to UserSettings table (MySQL)")
+            else:
+                logger.info("AutoCompleteSeconds column already exists in UserSettings table (MySQL)")
+        
+        logger.info("Auto complete seconds migration completed successfully")
+        
+    finally:
+        cursor.close()
+
+
+@register_migration("017", "add_ntfy_auth_columns", "Add ntfy authentication columns to UserNotificationSettings table", requires=["011"])
+def migration_017_add_ntfy_auth_columns(conn, db_type: str):
+    """Add ntfy authentication columns (username, password, access_token) to UserNotificationSettings table"""
+    cursor = conn.cursor()
+    
+    try:
+        if db_type == "postgresql":
+            # Check if columns already exist (PostgreSQL - lowercase column names)
+            cursor.execute("""
+                SELECT column_name FROM information_schema.columns 
+                WHERE table_name = 'UserNotificationSettings' 
+                AND column_name IN ('ntfyusername', 'ntfypassword', 'ntfyaccesstoken')
+            """)
+            existing_columns = [row[0] for row in cursor.fetchall()]
+            
+            if 'ntfyusername' not in existing_columns:
+                cursor.execute("""
+                    ALTER TABLE "UserNotificationSettings"
+                    ADD COLUMN ntfyusername VARCHAR(255)
+                """)
+                logger.info("Added ntfyusername column to UserNotificationSettings table (PostgreSQL)")
+            
+            if 'ntfypassword' not in existing_columns:
+                cursor.execute("""
+                    ALTER TABLE "UserNotificationSettings"
+                    ADD COLUMN ntfypassword VARCHAR(255)
+                """)
+                logger.info("Added ntfypassword column to UserNotificationSettings table (PostgreSQL)")
+            
+            if 'ntfyaccesstoken' not in existing_columns:
+                cursor.execute("""
+                    ALTER TABLE "UserNotificationSettings"
+                    ADD COLUMN ntfyaccesstoken VARCHAR(255)
+                """)
+                logger.info("Added ntfyaccesstoken column to UserNotificationSettings table (PostgreSQL)")
+        
+        else:
+            # Check if columns already exist (MySQL)
+            cursor.execute("""
+                SELECT COUNT(*)
+                FROM information_schema.columns
+                WHERE table_name = 'UserNotificationSettings' 
+                AND column_name = 'NtfyUsername'
+                AND table_schema = DATABASE()
+            """)
+            username_exists = cursor.fetchone()[0] > 0
+            
+            cursor.execute("""
+                SELECT COUNT(*)
+                FROM information_schema.columns
+                WHERE table_name = 'UserNotificationSettings' 
+                AND column_name = 'NtfyPassword'
+                AND table_schema = DATABASE()
+            """)
+            password_exists = cursor.fetchone()[0] > 0
+            
+            cursor.execute("""
+                SELECT COUNT(*)
+                FROM information_schema.columns
+                WHERE table_name = 'UserNotificationSettings' 
+                AND column_name = 'NtfyAccessToken'
+                AND table_schema = DATABASE()
+            """)
+            token_exists = cursor.fetchone()[0] > 0
+            
+            if not username_exists:
+                cursor.execute("""
+                    ALTER TABLE UserNotificationSettings
+                    ADD COLUMN NtfyUsername VARCHAR(255)
+                """)
+                logger.info("Added NtfyUsername column to UserNotificationSettings table (MySQL)")
+            
+            if not password_exists:
+                cursor.execute("""
+                    ALTER TABLE UserNotificationSettings
+                    ADD COLUMN NtfyPassword VARCHAR(255)
+                """)
+                logger.info("Added NtfyPassword column to UserNotificationSettings table (MySQL)")
+            
+            if not token_exists:
+                cursor.execute("""
+                    ALTER TABLE UserNotificationSettings
+                    ADD COLUMN NtfyAccessToken VARCHAR(255)
+                """)
+                logger.info("Added NtfyAccessToken column to UserNotificationSettings table (MySQL)")
+        
+        logger.info("Ntfy authentication columns migration completed successfully")
+        
+    finally:
+        cursor.close()
+
+
+@register_migration("018", "add_gpodder_sync_timestamp", "Add GPodder last sync timestamp for incremental sync", requires=["001"])
+def migration_018_gpodder_sync_timestamp(conn, db_type: str):
+    """Add GPodder last sync timestamp column for proper incremental sync per GPodder spec"""
+    cursor = conn.cursor()
+    
+    try:
+        if db_type == "postgresql":
+            # Check if column already exists (PostgreSQL)
+            cursor.execute("""
+                SELECT column_name FROM information_schema.columns 
+                WHERE table_name = 'Users' 
+                AND column_name = 'lastsynctime'
+            """)
+            existing_columns = [row[0] for row in cursor.fetchall()]
+            
+            if 'lastsynctime' not in existing_columns:
+                cursor.execute("""
+                    ALTER TABLE "Users"
+                    ADD COLUMN LastSyncTime TIMESTAMP WITH TIME ZONE
+                """)
+                logger.info("Added LastSyncTime column to Users table (PostgreSQL)")
+        
+        else:
+            # Check if column already exists (MySQL)
+            cursor.execute("""
+                SELECT COUNT(*)
+                FROM information_schema.columns
+                WHERE table_name = 'Users' 
+                AND column_name = 'LastSyncTime'
+                AND table_schema = DATABASE()
+            """)
+            column_exists = cursor.fetchone()[0] > 0
+            
+            if not column_exists:
+                cursor.execute("""
+                    ALTER TABLE Users
+                    ADD COLUMN LastSyncTime DATETIME
+                """)
+                logger.info("Added LastSyncTime column to Users table (MySQL)")
+        
+        logger.info("GPodder sync timestamp migration completed successfully")
         
     finally:
         cursor.close()

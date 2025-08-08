@@ -3586,6 +3586,12 @@ class OIDCProviderValues(BaseModel):
     button_color: Optional[str] = "#000000"
     button_text_color: Optional[str] = "#000000"
     icon_svg: Optional[str] = None
+    name_claim: Optional[str] = None
+    email_claim: Optional[str] = None
+    username_claim: Optional[str] = None
+    roles_claim: Optional[str] = None
+    user_role: Optional[str] = None
+    admin_role: Optional[str] = None
 
 @app.post("/api/data/add_oidc_provider")
 async def api_add_oidc_provider(
@@ -3605,7 +3611,13 @@ async def api_add_oidc_provider(
             provider_values.scope,
             provider_values.button_color,
             provider_values.button_text_color,
-            provider_values.icon_svg
+            provider_values.icon_svg,
+            provider_values.name_claim,
+            provider_values.email_claim,
+            provider_values.username_claim,
+            provider_values.roles_claim,
+            provider_values.user_role,
+            provider_values.admin_role
         ))
         if not provider_id:
             raise HTTPException(
@@ -5792,7 +5804,8 @@ async def stream_episode(
             print(f'file path in if source else {file_path}')
 
         if file_path:
-            return FileResponse(path=file_path, media_type='audio/mpeg', filename=os.path.basename(file_path))
+            # Don't set filename to allow streaming instead of forced download
+            return FileResponse(path=file_path, media_type='audio/mpeg')
         else:
             raise HTTPException(status_code=404, detail="Episode not found or not downloaded")
     else:
@@ -6085,21 +6098,23 @@ async def get_user_feed(
     request: Request,
     user_id: int,
     api_key: str,  # Now a query parameter
-    limit: int = 100,
-    podcast_id: Optional[List[int]] = None,
+    limit: int = 1000,
+    podcast_id: Optional[int] = None,
     source_type: str = Query(None, alias='type'),
     cnx=Depends(get_database_connection)
 ):
     """Get RSS feed for all podcasts or a specific podcast"""
     print(f'user: {user_id}, api: {api_key}')
+    print(f'podcast_id parameter: {podcast_id}, type: {type(podcast_id)}')
+    print(f'podcast_id_list will be: {[podcast_id] if podcast_id is not None else None}')
     try:
-        if reverse_proxy == "True":
-            domain = f'{proxy_protocol}://{proxy_host}'
-        else:
-            domain = f'{request.url.scheme}://{request.url.hostname}'
+        domain = os.getenv('HOSTNAME', f'{request.url.scheme}://{request.url.hostname}:{request.url.port or 80}')
 
 
-        rss_key = database_functions.functions.get_rss_key_if_valid(cnx, database_type, api_key, podcast_id)
+        # Convert single podcast_id to list format if provided
+        podcast_id_list = [podcast_id] if podcast_id is not None else None
+
+        rss_key = database_functions.functions.get_rss_key_if_valid(cnx, database_type, api_key, podcast_id_list)
 
         # TODO: remove this once backwards compatibility is no longer needed
         if not rss_key:
@@ -6119,7 +6134,7 @@ async def get_user_feed(
             limit,
             source_type,
             domain,
-            podcast_id
+            podcast_id=podcast_id_list
         )
         return Response(
             content=feed_content,
@@ -6143,6 +6158,27 @@ async def toggle_rss_feeds(
 
         new_status = database_functions.functions.set_rss_feed_status(cnx, database_type, user_id, enable)
         return {"status": "success", "enabled": new_status}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/data/rss_key")
+async def get_user_rss_key(
+    cnx=Depends(get_database_connection),
+    api_key: str = Depends(get_api_key_from_header)
+):
+    """Get the RSS key for the current user"""
+    try:
+        key_id = database_functions.functions.id_from_api_key(cnx, database_type, api_key)
+        if not key_id:
+            raise HTTPException(status_code=403, detail="Invalid API key")
+
+        rss_key = database_functions.functions.get_user_rss_key(cnx, database_type, key_id)
+        if not rss_key:
+            raise HTTPException(status_code=404, detail="No RSS key found. Please enable RSS feeds first.")
+
+        return {"rss_key": rss_key}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -6410,7 +6446,7 @@ async def oidc_callback(
             )
 
         # Unpack provider details
-        provider_id, client_id, client_secret, token_url, userinfo_url = provider
+        provider_id, client_id, client_secret, token_url, userinfo_url, name_claim, email_claim, username_claim, roles_claim, user_role, admin_role = provider
 
         # Exchange authorization code for access token
         async with httpx.AsyncClient() as client:
@@ -6455,7 +6491,7 @@ async def oidc_callback(
 
                 user_info = userinfo_response.json()
                 print(f"User info response: {user_info}")
-                email = user_info.get("email")
+                email = user_info.get(email_claim or "email")
 
                 parsed_url = urlparse(userinfo_url)
                 if not email and parsed_url.hostname == 'api.github.com':
@@ -6491,23 +6527,87 @@ async def oidc_callback(
                     url=f"{frontend_base}/oauth/callback?error=network_error"
                 )
 
+            # Verify access.
+            if roles_claim and user_role:
+                roles = user_info.get(roles_claim)
+                if not isinstance(roles, list):
+                    print(f'Claim {roles_claim} should be a list of strings, but it is {roles}.')
+                    return RedirectResponse(
+                        url=f"{frontend_base}/oauth/callback?error=no_access&details=invalid_roles"
+                    )
+                if user_role not in roles and not (admin_role and admin_role in roles):
+                    print(f"User user role {user_role} {f'and admin role {admin_role}' if admin_role else ''} not in user's roles ({roles}), denying access.")
+                    return RedirectResponse(
+                        url=f"{frontend_base}/oauth/callback?error=no_access"
+                    )
+
             # Check if user exists
             user = database_functions.functions.get_user_by_email(cnx, database_type, email)
 
             # In your OIDC callback function, replace the user creation section with:
 
+            # Determine the user's information
+            fullname = user_info.get(name_claim or "name", "")
+            if username_claim and username_claim not in user_info:
+                print(f"Unable to determine username for user, username claim {username_claim} not present")
+                return RedirectResponse(
+                    url=f"{frontend_base}/oauth/callback?error=user_creation_failed&details=username_claim_missing"
+                )
+            username = user_info.get(username_claim or "preferred_username")
+
             if not user:
                 # Create new user
                 print(f"User with email {email} not found, creating new user")
-                fullname = user_info.get("name", "")
-                username = email.split("@")[0].lower()
-                base_username = username
-                counter = 1
-                max_attempts = 10
 
-                while counter <= max_attempts:
+                if username is None:
+                    username = email.split("@")[0].lower()
+                    base_username = username
+                    counter = 1
+                    max_attempts = 10
+
+                    while counter <= max_attempts:
+                        try:
+                            print(f"Attempt {counter} to create user with base username: {base_username}")
+                            user_id = database_functions.functions.create_oidc_user(
+                                cnx, database_type, email, fullname, username
+                            )
+                            print(f"User created successfully with ID: {user_id}")
+
+                            if not user_id:
+                                print(f"ERROR: Invalid user_id returned: {user_id}")
+                                return RedirectResponse(
+                                    url=f"{frontend_base}/oauth/callback?error=invalid_user_id"
+                                )
+
+                            print(f"Creating API key for user_id: {user_id}")
+                            api_key = database_functions.functions.create_api_key(cnx, database_type, user_id)
+                            print(f"API key created: {api_key[:5]}... (truncated for security)")
+                            break
+                        except UniqueViolation:
+                            print(f"Username conflict with {username}, trying next variation")
+                            username = f"{base_username}{counter}"
+                            counter += 1
+                            if counter > max_attempts:
+                                print(f"Failed to create user after {max_attempts} attempts due to username conflicts")
+                                return RedirectResponse(
+                                    url=f"{frontend_base}/oauth/callback?error=username_conflict"
+                                )
+                        except Exception as e:
+                            print(f"Error during user creation: {str(e)}")
+                            import traceback
+                            print(f"Traceback: {traceback.format_exc()}")
+                            return RedirectResponse(
+                                url=f"{frontend_base}/oauth/callback?error=user_creation_failed&details={str(e)[:50]}"
+                            )
+                    else:
+                        print("Failed to create user after maximum attempts")
+                        return RedirectResponse(
+                            url=f"{frontend_base}/oauth/callback?error=user_creation_failed"
+                        )
+
+                else:
                     try:
-                        print(f"Attempt {counter} to create user with base username: {base_username}")
+                        print(f"Attempt to create user with username: {username}")
                         user_id = database_functions.functions.create_oidc_user(
                             cnx, database_type, email, fullname, username
                         )
@@ -6522,16 +6622,11 @@ async def oidc_callback(
                         print(f"Creating API key for user_id: {user_id}")
                         api_key = database_functions.functions.create_api_key(cnx, database_type, user_id)
                         print(f"API key created: {api_key[:5]}... (truncated for security)")
-                        break
                     except UniqueViolation:
-                        print(f"Username conflict with {username}, trying next variation")
-                        username = f"{base_username}{counter}"
-                        counter += 1
-                        if counter > max_attempts:
-                            print(f"Failed to create user after {max_attempts} attempts due to username conflicts")
-                            return RedirectResponse(
-                                url=f"{frontend_base}/oauth/callback?error=username_conflict"
-                            )
+                        print("Failed to create user due to username conflicts")
+                        return RedirectResponse(
+                            url=f"{frontend_base}/oauth/callback?error=username_conflict"
+                        )
                     except Exception as e:
                         print(f"Error during user creation: {str(e)}")
                         import traceback
@@ -6539,11 +6634,6 @@ async def oidc_callback(
                         return RedirectResponse(
                             url=f"{frontend_base}/oauth/callback?error=user_creation_failed&details={str(e)[:50]}"
                         )
-                else:
-                    print("Failed to create user after maximum attempts")
-                    return RedirectResponse(
-                        url=f"{frontend_base}/oauth/callback?error=user_creation_failed"
-                    )
 
             else:
                 # Existing user - retrieve their API key
@@ -6556,6 +6646,26 @@ async def oidc_callback(
                     api_key = database_functions.functions.create_api_key(cnx, database_type, user_id)
 
                 print(f"API key retrieved: {api_key[:5]}... (truncated for security)")
+
+                # Update user info based on OIDC information.
+                database_functions.functions.set_fullname(cnx, database_type, user_id, fullname)
+
+                current_username = user[2] if isinstance(user, tuple) else user['username']
+                if username_claim and username != current_username:
+                    if database_functions.functions.check_usernames(cnx, database_type, username):
+                        print(f'Unable to update username for user {user_id} to match the username specified by the OIDC provider ({username}) as this is already in use by another user.')
+                    else:
+                        database_functions.functions.set_username(cnx, database_type, user_id, username)
+
+            # Update admin role based on OIDC roles.
+            if roles_claim and admin_role:
+                roles = user_info.get(roles_claim)
+                if not isinstance(roles, list):
+                    print(f'Claim {roles_claim} should be a list of strings, but it is {roles}.')
+                    return RedirectResponse(
+                        url=f"{frontend_base}/oauth/callback?error=no_access&details=invalid_roles"
+                    )
+                database_functions.functions.set_isadmin(cnx, database_type, user_id, admin_role in roles)
 
             # Success case - redirect with API key
             return RedirectResponse(url=f"{frontend_base}/oauth/callback?api_key={api_key}")
@@ -6764,9 +6874,9 @@ async def run_startup_tasks(request: InitRequest, cnx=Depends(get_database_conne
         print('start of startup')
         # Verify if the API key is valid
         is_valid = database_functions.functions.verify_api_key(cnx, database_type, request.api_key)
-        is_web_key = database_functions.functions.get_web_key(cnx, database_type)
+        web_key = database_functions.functions.get_web_key(cnx, database_type)
         # Check if the provided API key is the web key
-        is_web_key = request.api_key == base_webkey.web_key
+        is_web_key = request.api_key == web_key
 
         if not is_valid or not is_web_key:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or unauthorized API key")

@@ -10,24 +10,24 @@
 
 ---
 
-- [PinePods :evergreen\_tree:](#pinepods-evergreen_tree)
+- [PinePods :evergreen_tree:](#pinepods-evergreen_tree)
 - [Getting Started](#getting-started)
   - [Features](#features)
   - [Try it out! :zap:](#try-it-out-zap)
   - [Installing :runner:](#installing-runner)
-    - [Server Installation :floppy\_disk:](#server-installation-floppy_disk)
-      - [Compose File](#compose-file)
+    - [Server Installation :floppy_disk:](#server-installation-floppy_disk)
+      - [Docker Compose](#docker-compose)
+      - [Helm Deployment](#helm-deployment)
       - [Admin User Info](#admin-user-info)
-      - [Proxy Info](#proxy-info)
       - [Note on the Search API](#note-on-the-search-api)
       - [Timezone Configuration](#timezone-configuration)
-      - [Client API Vars](#client-api-vars)
       - [Start it up!](#start-it-up)
-    - [Linux Client Install :computer:](#linux-client-install-computer)
-    - [Windows Client Install :computer:](#windows-client-install-computer)
-    - [Mac Client Install :computer:](#mac-client-install-computer)
-    - [Android Install :iphone:](#android-install-iphone)
-    - [ios Install :iphone:](#ios-install-iphone)
+    - [Client Installs](#client-installs)
+      - [Linux Client Install :computer:](#linux-client-install-computer)
+      - [Windows Client Install :computer:](#windows-client-install-computer)
+      - [Mac Client Install :computer:](#mac-client-install-computer)
+      - [Android Install :iphone:](#android-install-iphone)
+      - [iOS Install :iphone:](#ios-install-iphone)
   - [PodPeople DB](#podpeople-db)
   - [Pinepods Firewood](#pinepods-firewood)
   - [Platform Availability](#platform-availability)
@@ -60,12 +60,13 @@ There's potentially a few steps to getting Pinepods fully installed. After you g
 
 First, the server. You have multiple options for deploying Pinepods:
 
-  - [Using Docker Compose :whale:](#docker-compose)
-  - [Using Helm for Kubernetes :anchor:](#helm-deployment)
+- [Using Docker Compose :whale:](#docker-compose)
+- [Using Helm for Kubernetes :anchor:](#helm-deployment)
 
 You can also choose to use MySQL/MariaDB or Postgres as your database. Examples for both are provided below.
 
 ### Docker Compose
+
 #### User Permissions
 Pinepods can run with specific user permissions to ensure downloaded files are accessible on the host system. This is controlled through two environment variables:
 - `PUID`: Process User ID (defaults to 1000 if not set)
@@ -107,6 +108,7 @@ services:
       # Basic Server Info
       SEARCH_API_URL: 'https://search.pinepods.online/api/search'
       PEOPLE_API_URL: 'https://people.pinepods.online'
+      HOSTNAME: 'http://localhost:8040'
       # Database Vars
       DB_TYPE: postgresql
       DB_HOST: db
@@ -168,6 +170,7 @@ services:
       # Basic Server Info
       SEARCH_API_URL: 'https://search.pinepods.online/api/search'
       PEOPLE_API_URL: 'https://people.pinepods.online'
+      HOSTNAME: 'http://localhost:8040'
       # Database Vars
       DB_TYPE: mariadb
       DB_HOST: db
@@ -200,6 +203,8 @@ services:
 Make sure you change these variables to variables specific to yourself at a minimum.
 
 ```
+      # The url you hit the site at. Only used for sharing rss feeds
+      HOSTNAME: 'http://localhost:8040'
       # These next 4 are optional. They allow you to set an admin without setting on the first boot
       USERNAME: pinepods
       PASSWORD: password
@@ -218,7 +223,7 @@ Most of those are pretty obvious, but let's break a couple of them down.
 
 #### Admin User Info
 
-First of all, the USERNAME, PASSWORD, FULLNAME, and EMAIL vars are your details for your default admin account. This account will have admin credentails and will be able to log in right when you start up the app. Once started you'll be able to create more users and even more admins but you need an account to kick things off on. If you don't specify credentials in the compose file it will create an account with a random password for you but I would recommend just creating one for yourself.
+First of all, the USERNAME, PASSWORD, FULLNAME, and EMAIL vars are your details for your default admin account. This account will have admin credentials and will be able to log in right when you start up the app. Once started you'll be able to create more users and even more admins but you need an account to kick things off on. If you don't specify credentials in the compose file it will create an account with a random password for you but I would recommend just creating one for yourself.
 
 
 #### Note on the Search API
@@ -294,7 +299,7 @@ For a complete list of valid timezone identifiers, see the [IANA Time Zone Datab
 
 ##### Troubleshooting Timezones
 
-- I'm on macOS and timezone settings aren't working
+**I'm on macOS and timezone settings aren't working**
 
 macOS uses a different timezone file format than Linux. You must use the TZ environment variable method on macOS.
 
@@ -313,175 +318,157 @@ To pull the container images and get started. Once fully started up you'll be ab
 ### Helm Deployment
 
 Alternatively, you can deploy Pinepods using Helm on a Kubernetes cluster. Helm is a package manager for Kubernetes that simplifies deployment.
-Adding the Helm Repository
+
+#### Adding the Helm Repository
 
 First, add the Pinepods Helm repository:
 
-```
+```bash
 helm repo add pinepods http://helm.pinepods.online
 helm repo update
 ```
+
 #### Installing the Chart
 
-To install the Pinepods Helm chart, run:
+To install the Pinepods Helm chart with default values:
 
+```bash
+helm install pinepods pinepods/pinepods --namespace pinepods-namespace --create-namespace
 ```
-helm install pinepods pinepods/pinepods -f my-values.yaml --namespace pinepods-namespace
-```
-#### Customizing Values
 
-Create a my-values.yaml file to override default values - Any value with {{  }} are things you need to set yourself.:
+Or with custom values:
 
+```bash
+helm install pinepods pinepods/pinepods -f my-values.yaml --namespace pinepods-namespace --create-namespace
 ```
-## Container image configuration
+
+#### Configuration Options
+
+The Helm chart supports extensive configuration. Key areas include:
+
+**Main Application:**
+- Image repository and tag configuration
+- Service type and port settings
+- Ingress configuration with TLS support
+- Persistent storage for downloads and backups
+- Resource limits and requests
+- Security contexts and pod placement
+
+**Dependencies:**
+- PostgreSQL database (can be disabled for external database)
+- Valkey/Redis for caching (can be disabled)
+- Optional backend API deployment for self-hosted search
+- Optional PodPeople database for podcast host information
+
+**Example values.yaml:**
+
+```yaml
+# Main application configuration
 image:
   repository: madeofpendletonwool/pinepods
   tag: latest
-  pullPolicy: Always
+  pullPolicy: IfNotPresent
 
 service:
   type: ClusterIP
   port: 8040
 
-
 ingress:
   enabled: true
   className: ""
   annotations:
-    annotations:
-      # Whatever you need to set here
+    traefik.ingress.kubernetes.io/router.entrypoints: web
   hosts:
-    - host: {{ pinepods_domain }}
+    - host: pinepods.example.com
       paths:
         - path: /
           pathType: Prefix
+  tls: []
 
-
+# Persistent storage
 persistence:
   enabled: true
   downloads:
-    storageClass: {{ storage_class }}
-    accessMode: ReadWriteOnce
-    size: {{ downloads_size }}
+    storageClass: ""  # Use default storage class
+    size: 5Gi
   backups:
-    storageClass: {{ storage_class }}
-    accessMode: ReadWriteOnce
-    size: {{ backups_size }}
+    storageClass: ""
+    size: 2Gi
 
+# Database configuration
 postgresql:
   enabled: true
   auth:
     username: postgres
-    password: {{ postgres_password }}
+    password: "changeme"
     database: pinepods_database
   persistence:
     enabled: true
-    storageClass: {{ storage_class }}
-    size: {{ postgres_size }}
+    size: 3Gi
 
+# Valkey/Redis configuration
 valkey:
   enabled: true
   architecture: standalone
   auth:
     enabled: false
-  replica:
-    replicaCount: 0
-  primary:
-    persistence:
-      enabled: false
-  service:
-    port: 6379
 
-env:
-  SEARCH_API_URL: "https://search.pinepods.online/api/search"
-  PEOPLE_API_URL: "https://people.pinepods.online"
-  USERNAME: {{ admin_username }}
-  PASSWORD: {{ admin_password }}
-  FULLNAME: {{ admin_fullname }}
-  EMAIL: {{ admin_email }}
-  DB_TYPE: "postgresql"
-  DB_USER: "postgres"
-  DB_NAME: "pinepods_database"
-  DB_PORT: "5432"
-  DEBUG_MODE: "false"
-
-# Backend and Podpeople can be disabled (set to false) if you plan to use the ones I maintain.
-# To do that set to false and simply keep the SEARCH_API_URL and PEOPLE_API_URL above as their defaults
+# Optional backend API (self-hosted search)
 backend:
-  enabled: true
-  image:
-    repository: madeofpendletonwool/pinepods_backend
-    tag: latest
-    pullPolicy: Always
-  service:
-    type: ClusterIP
-    port: 5000
+  enabled: false
   secrets:
-    apiKey: {{ backend_api_key }}
-    apiSecret: {{ backend_api_secret }}
-# This ingress is specific to pinepods backend. If you don't use that change to disabled.
-  ingress:
-    enabled: true
-    className: ""
-    annotations:
-      # Whatever you need to set here
-    hosts:
-      - host: {{ backend_domain }}
-        paths:
-          - path: /
-            pathType: Prefix
+    apiKey: "YOUR_PODCAST_INDEX_KEY"
+    apiSecret: "YOUR_PODCAST_INDEX_SECRET"
 
+# Optional PodPeople database
 podpeople:
-  enabled: true
-  image:
-    repository: madeofpendletonwool/podpeople_db
-    tag: latest
-    pullPolicy: Always
-  service:
-    type: ClusterIP
-    port: 8085
-  persistence:
-    enabled: true
-    storageClass: {{ storage_class }}
-    size: {{ podpeople_size }}
-    accessMode: ReadWriteOnce
-  auth:
-    adminUsername: {{ admin_username }}
-    adminPassword: {{ admin_password }}
-  environment:
-    ntfyUrl: {{ ntfy_url }}
-    ntfyTopic: {{ ntfy_topic }}
-    searchApiUrl: {{ search_api_url }}
-    baseurl: {{ pod_people_base_url }}
-# This ingress is specific to podpeople db. If you don't use that change to disabled.
-  ingress:
-    enabled: true
-    className: ""
-    annotations:
-      # Whatever you need to set here
-    hosts:
-      - host: {{ podpeople_domain }}
-        paths:
-          - path: /
-            pathType: Prefix
+  enabled: false
+
+# Application environment
+env:
+  USERNAME: "admin"
+  PASSWORD: "password"
+  FULLNAME: "Admin User"
+  EMAIL: "admin@example.com"
+  DEBUG_MODE: "false"
+  HOSTNAME: 'http://localhost:8040'
 ```
 
-#### Create a namespace for Pinepods:
+#### External Database Configuration
+
+To use an external database instead of the included PostgreSQL:
+
+```yaml
+postgresql:
+  enabled: false
+
+externalDatabase:
+  host: "your-postgres-host"
+  port: 5432
+  user: postgres
+  password: "your-password"
+  database: pinepods_database
+```
+
+#### Create a Namespace for Pinepods
 
 Create a namespace to hold the deployment:
-```
+
+```bash
 kubectl create namespace pinepods-namespace
 ```
 
 #### Starting Helm
 
 Once you have everything set up, install the Helm chart:
+
+```bash
+helm install pinepods pinepods/pinepods -f my-values.yaml --namespace pinepods-namespace --create-namespace
 ```
-helm install pinepods pinepods/Pinepods -f my-values.yaml
-```
+
 This will deploy Pinepods on your Kubernetes cluster with a postgres database. MySQL/MariaDB is not supported with the kubernetes setup. The service will be accessible at the specified NodePort.
 
-Check out the Tutorials on the documentation site for more information on how to do basic things.
+Check out the Tutorials on the documentation site for more information on how to do basic things:
 
 https://pinepods.online/tutorial-basic/sign-in-homescreen.md
 
@@ -489,7 +476,7 @@ https://pinepods.online/tutorial-basic/sign-in-homescreen.md
 
 Any of the client additions are super easy to get going.
 
-### Linux Client Installs :computer:
+### Linux Client Install :computer:
 
 #### AppImage, Fedora/Red Hat Derivative/Debian based (Ubuntu)
 
@@ -529,9 +516,9 @@ flatpak install flathub com.gooseberrydevelopment.pinepods
 
 #### Snap
 
-I have had such a nightmare trying to make the snap client work. Pass, use the flatpak. They're better anyway. I'll test it again in the future and see if Cannonical has gotten it together. If you really want a snap version of the client please reach out and tell me you're interested in the first place
+I have had such a nightmare trying to make the snap client work. Pass, use the flatpak. They're better anyway. I'll test it again in the future and see if Canonical has gotten it together. If you really want a snap version of the client please reach out and tell me you're interested in the first place.
 
-#### Windows Client Install :computer:
+### Windows Client Install :computer:
 
 Any of the client additions are super easy to get going. First head over to the releases page on Github
 
@@ -547,7 +534,7 @@ Either one does the same thing ultimately and will work just fine.
 
 Once started you'll be able to sign in with your username and password. The server name is simply the url you browse to to access the server.
 
-#### Mac Client Install :computer:
+### Mac Client Install :computer:
 
 Any of the client additions are super easy to get going. First head over to the releases page on Github
 
@@ -557,25 +544,25 @@ There's a dmg and pinepods_mac file.
 
 Simply extract, and then go into Contents/MacOS. From there you can run the app.
 
-The dmg file will prompt you to install the Pinepods client into your applications fileter while the _mac file will just run a portable version of the app.
+The dmg file will prompt you to install the Pinepods client into your applications folder while the _mac file will just run a portable version of the app.
 
 Once started you'll be able to sign in with your username and password. The server name is simply the url you browse to to access the server.
 
-#### Android Install :iphone:
+### Android Install :iphone:
 
 For now, it's a manual install and there are some issues with the app. Check the releases page for the latest apk.
 
-#### ios Install :iphone:
+### iOS Install :iphone:
 
 Coming Soon - The web app works great for phones.
 
 ## PodPeople DB
 
-Podpeople DB is a project that I maintain and also develop. Podpeople DB is a way to suppliment Person tags for podcasts that don't support them by default. This allows the community to maintain hosts and follow them to all podcasts! I maintain an instance of Podpeople DB at podpeopledb.com. Otherwise, it's an open source project and you can maintain and instance of your own if you prefer. For information on that go [here](https://podpeopledb.com/docs/self-host). You can download the database yourself and maintain your own instance. If you do decide to go this route please still add any hosts for your favorite podcasts at the instance hosted at podpeopledb.com. The community will thank you!
+Podpeople DB is a project that I maintain and also develop. Podpeople DB is a way to supplement Person tags for podcasts that don't support them by default. This allows the community to maintain hosts and follow them to all podcasts! I maintain an instance of Podpeople DB at podpeopledb.com. Otherwise, it's an open source project and you can maintain an instance of your own if you prefer. For information on that go [here](https://podpeopledb.com/docs/self-host). You can download the database yourself and maintain your own instance. If you do decide to go this route please still add any hosts for your favorite podcasts at the instance hosted at podpeopledb.com. The community will thank you!
 
 For additional info on Podpeople DB check out [the docs](https://podpeopledb.com/docs/what-is-this-for).
 
-Additionally, I've written [a blog](https://www.pinepods.online/blog) post discussing the rational around it's creation.
+Additionally, I've written [a blog](https://www.pinepods.online/blog) post discussing the rationale around its creation.
 
 Finally, you can check out the Repo for it [here!](https://github.com/madeofpendletonwool/podpeople-db)
 
@@ -585,7 +572,7 @@ A CLI only client that can be used to remotely share your podcasts to is in the 
 
 ## Platform Availability
 
-The Intention is for this app to become available on Windows, Linux, Mac, Android, and IOS. Windows, Linux, Mac, web, and android are all currently available and working. The android app is in a sort of beta currently as I finalize any remaining issues with it. Track those [here](https://github.com/madeofpendletonwool/PinePods/issues/320). This app is built with Tauri, therefore once the Android version is in a final state there's no reason I can't just compile it to ios as well.
+The Intention is for this app to become available on Windows, Linux, Mac, Android, and iOS. Windows, Linux, Mac, web, and android are all currently available and working. The android app is in a sort of beta currently as I finalize any remaining issues with it. Track those [here](https://github.com/madeofpendletonwool/PinePods/issues/320). This app is built with Tauri, therefore once the Android version is in a final state there's no reason I can't just compile it to iOS as well.
 
 For a podcast sync app I recommend Opodsync, but nextcloud sync works great too! This is only required if you use an app like AntennaPods. So then your Pinepods and Antennapods sync up podcasts.
 
@@ -593,26 +580,22 @@ For a podcast sync app I recommend Opodsync, but nextcloud sync works great too!
 
 [Nextcloud Podcast Sync App](https://apps.nextcloud.com/apps/gpoddersync)
 
-ARM devices are also supported including raspberry pis. The app is shockingly performant on a raspberry pi as well. The only limitation is that a 64bit OS is required on an arm device. Setup is exactly the same, just use the latest tag and docker will auto pull the arm version.
+ARM devices are also supported including raspberry pis. The app is shockingly performant on a raspberry pi as well. The only limitation is that a 64bit OS is required on an ARM device. Setup is exactly the same, just use the latest tag and docker will auto pull the ARM version.
 
-## ToDo
-
-For a list of ToDo's check out the [Road to 1.0](https://github.com/madeofpendletonwool/PinePods/issues/397) issue. Updates and progress can be seen there:
 
 ### Clients to support
 
 - [x] Flatpak Package
 - [ ] Nix Package
 - [x] Aur Package
-- [x] Snap package
 - [x] Helm Chart and repo for kubernetes deployment
 - [ ] Mobile Apps
   - [x] Android App - Beta
     - [ ] Android Auto support
-  - [ ] IOS App
+  - [ ] iOS App
   - [ ] Packaging and automation
 
-## Long term goals
+### Long term goals
 
 - [ ] Podcast ad blocking. Either by parsing audio blocks with ai and filtering ads or by utilizing a centralized server to allow others to send their ad block info to after determining the timestamps for ads.
 
@@ -620,47 +603,69 @@ For a list of ToDo's check out the [Road to 1.0](https://github.com/madeofpendle
 ## Screenshots :camera:
 
 Main Homepage with podcasts displayed
+
 <p align="center">
-  <img src="./images/screenshots/homethemed.png">
+  <img width="800" src="./images/screenshots/homethemed.png">
 </p>
 
 Loads of themes!
+
 <p align="center">
-  <img src="./images/screenshots/home.png">
+  <img width="600" src="./images/screenshots/home.png">
 </p>
 <p align="center">
-  <img src="./images/screenshots/homelight.png">
+  <img width="600" src="./images/screenshots/homelight.png">
 </p>
 <p align="center">
-  <img src="./images/screenshots/homegreen.png">
+  <img width="600" src="./images/screenshots/homegreen.png">
 </p>
 
 Full Podcast Management
+
 <p align="center">
-  <img src="./images/screenshots/podpage.png">
+  <img width="800" src="./images/screenshots/podpage.png">
 </p>
 
 Browse through episodes
+
 <p align="center">
-  <img src="./images/screenshots/podview.png">
+  <img width="800" src="./images/screenshots/podview.png">
 </p>
 
 Markdown and HTML display compatible
+
 <p align="center">
-  <img src="./images/screenshots/markdownview.png">
+  <img width="800" src="./images/screenshots/markdownview.png">
 </p>
 
 Mobile support baked right in!
+
 <p align="center">
-  <img src="./images/screenshots/mobile.png">
+  <img width="300" src="./images/screenshots/mobile.png">
 </p>
 <p align="center">
-  <img src="./images/screenshots/mobileepisode.png">
+  <img width="300" src="./images/screenshots/mobileepisode.png">
 </p>
-
-
 
 #### Runners
 
-Arm Images made possible by Runs-On:
+ARM Images made possible by Runs-On:
 https://runs-on.com
+
+#### 📜 Credits & Licensing
+
+PinePods is an open-source podcast player developed by Gooseberry Development, licensed under the GNU General Public License v3.0 (GPL-3.0).
+
+The Pinepods Mobile app in the mobile directory includes code adapted from the excellent [Anytime Podcast Player](https://github.com/amugofjava/anytime_podcast_player), originally created by Ben Hills.
+
+#### 🧩 Included Third-Party Code
+
+**Anytime Podcast Player**
+© 2020 Ben Hills and project contributors
+Licensed under the BSD 3-Clause License
+
+Portions of the mobile app retain the original BSD license and attribution as required. Files with this license are labeled at the top to clearly indicate. See the LICENSE.ben_hills in the mobile directory for details.
+
+#### 💬 Acknowledgment
+
+Huge thanks to Ben Hills for open-sourcing the Anytime Podcast Player. It served as a solid foundation and greatly accelerated development of PinePods.
